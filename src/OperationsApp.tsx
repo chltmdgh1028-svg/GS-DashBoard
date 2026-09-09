@@ -770,6 +770,7 @@ export default function OperationsApp() {
   }
 
   if (!user) return <LoginView onLogin={handleLogin} />;
+  const isAdmin = user.role === "admin";
 
   const adminNav = [
     ["national", "전국 현황", BarChart3],
@@ -789,7 +790,7 @@ export default function OperationsApp() {
     ["national", "전국 Summary", BarChart3],
     ["focus", "중점상품", PackageCheck],
   ] as const;
-  const nav = user.role === "admin" ? adminNav : ofcNav;
+  const nav = isAdmin ? adminNav : ofcNav;
 
   return (
     <div className="app-shell">
@@ -807,7 +808,7 @@ export default function OperationsApp() {
           ))}
         </nav>
         <div className="sidebar-status">
-          <span>{user.role === "admin" ? "ADMIN" : "OFC"}</span>
+          <span>{isAdmin ? "ADMIN" : "OFC"}</span>
           <strong>{user.displayName}</strong>
           {dataset && <small>{dataset.config.campaignName}</small>}
           <button className="sidebar-logout" onClick={logout}>
@@ -818,16 +819,16 @@ export default function OperationsApp() {
       </aside>
 
       <main>
-        {view === "upload" && dataset?.permissions.canUpload && <UploadView dataset={dataset} config={config} busy={busy} message={message} onUpload={handleUpload} onPaste={handlePaste} />}
+        {view === "upload" && isAdmin && <UploadView dataset={dataset} config={config} busy={busy} message={message} onUpload={handleUpload} onPaste={handlePaste} />}
         {!dataset && view !== "upload" && view !== "config" && <EmptyState />}
         {dataset && view === "national" && <NationalView dataset={dataset} goTeam={(team) => { setSelectedTeam(team); setView("team"); }} />}
         {dataset && view === "team" && <TeamView dataset={dataset} selectedTeam={selectedTeam} onTeamChange={setSelectedTeam} goOfc={(team, ofc) => { setSelectedTeam(team); setSelectedOFC(ofc); setView("ofc"); }} />}
         {dataset && view === "ofc" && <OfcView dataset={dataset} selectedTeam={selectedTeam} selectedOFC={selectedOFC} onStore={(storeId) => { setSelectedStoreId(storeId); setView("store"); }} />}
         {dataset && view === "store" && <StoreView dataset={dataset} selectedStoreId={selectedStoreId} />}
         {dataset && view === "focus" && <FocusView dataset={dataset} />}
-        {dataset && view === "quality" && dataset.permissions.canViewValidation && <QualityView dataset={dataset} />}
-        {view === "config" && dataset?.permissions.canManageConfig && <ConfigView config={config} setConfig={setConfig} />}
-        {view === "history" && dataset?.permissions.canManageCampaigns && <HistoryView campaigns={campaigns} openCampaign={loadCampaign} />}
+        {dataset && view === "quality" && isAdmin && <QualityView dataset={dataset} />}
+        {view === "config" && isAdmin && <ConfigView config={config} setConfig={setConfig} />}
+        {view === "history" && isAdmin && <HistoryView campaigns={campaigns} openCampaign={loadCampaign} />}
       </main>
     </div>
   );
