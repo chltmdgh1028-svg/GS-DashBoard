@@ -640,17 +640,19 @@ function HistoryView({ campaigns, openCampaign }: { campaigns: CampaignListItem[
       <div className="page-title">
         <div>
           <h1>Campaign 관리</h1>
-          <p>ADMIN이 생성한 Snapshot 이력입니다. 새 Snapshot은 기존 Campaign을 덮어쓰지 않습니다.</p>
+          <p>ADMIN 재업로드 시 동일 Campaign에 새 Revision을 보관하고 최신 Revision만 Active로 제공합니다.</p>
         </div>
       </div>
       <div className="panel">
-        <h2>저장된 Campaign Snapshot</h2>
+        <h2>저장된 Campaign Revision</h2>
         <DataTable
           rows={campaigns}
           onRowClick={(row) => openCampaign(row.id)}
           columns={[
             { key: "name", header: "행사명", render: (row) => row.campaignName, align: "left" },
-            { key: "date", header: "생성일", render: (row) => new Date(row.createdAt).toLocaleString("ko-KR") },
+            { key: "active", header: "Active", render: (row) => `R${row.activeRevisionNumber ?? 1}` },
+            { key: "revisions", header: "Revision", render: (row) => formatNumber(row.revisionCount ?? 1), align: "right" },
+            { key: "updated", header: "최신 반영일", render: (row) => new Date(row.updatedAt ?? row.createdAt).toLocaleString("ko-KR") },
             { key: "stores", header: "점포", render: (row) => formatNumber(row.storeCount), align: "right" },
             { key: "products", header: "상품", render: (row) => formatNumber(row.productCount), align: "right" },
             { key: "issues", header: "검증 이슈", render: (row) => formatNumber(row.issueCount), align: "right" },

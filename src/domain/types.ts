@@ -217,6 +217,10 @@ export interface CampaignListItem {
   id: string;
   campaignName: string;
   createdAt: string;
+  updatedAt?: string;
+  activeRevisionId?: string;
+  activeRevisionNumber?: number;
+  revisionCount?: number;
   storeCount: number;
   productCount: number;
   issueCount: number;

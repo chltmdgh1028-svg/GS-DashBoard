@@ -12,6 +12,17 @@ import { campaignMeta, dashboardForUser } from "../src/server/scope.js";
 
 interface StoredCampaign {
   id: string;
+  campaignName: string;
+  createdAt: string;
+  updatedAt: string;
+  activeRevisionId: string;
+  revisions: StoredCampaignRevision[];
+}
+
+interface StoredCampaignRevision {
+  id: string;
+  revisionNumber: number;
+  createdAt: string;
   dataset: CampaignDataset;
 }
 
@@ -44,9 +55,62 @@ function emptyDb(): AppDb {
   return { campaigns: [], ofcAccounts: [] };
 }
 
+function normalizeStoredCampaign(raw: unknown): StoredCampaign | undefined {
+  const item = raw as Partial<StoredCampaign> & { dataset?: CampaignDataset };
+  if (!item) return undefined;
+
+  if (Array.isArray(item.revisions) && item.revisions.length > 0) {
+    const revisions = item.revisions
+      .filter((revision): revision is StoredCampaignRevision => Boolean(revision?.dataset))
+      .map((revision, index) => ({
+        id: revision.id || crypto.randomUUID(),
+        revisionNumber: revision.revisionNumber || index + 1,
+        createdAt: revision.createdAt || revision.dataset.createdAt || new Date().toISOString(),
+        dataset: revision.dataset,
+      }));
+    if (!revisions.length) return undefined;
+    const activeRevisionId = item.activeRevisionId && revisions.some((revision) => revision.id === item.activeRevisionId)
+      ? item.activeRevisionId
+      : revisions[0].id;
+    const active = revisions.find((revision) => revision.id === activeRevisionId) ?? revisions[0];
+    return {
+      id: item.id || active.dataset.config.campaignId,
+      campaignName: item.campaignName || active.dataset.config.campaignName,
+      createdAt: item.createdAt || revisions[revisions.length - 1]?.createdAt || active.createdAt,
+      updatedAt: item.updatedAt || active.createdAt,
+      activeRevisionId,
+      revisions,
+    };
+  }
+
+  if (!item.dataset) return undefined;
+  const revisionId = item.id || crypto.randomUUID();
+  const campaignId = item.dataset.config.campaignId || item.id || crypto.randomUUID();
+  const dataset = {
+    ...item.dataset,
+    config: { ...item.dataset.config, campaignId },
+  };
+  return {
+    id: campaignId,
+    campaignName: dataset.config.campaignName,
+    createdAt: dataset.createdAt,
+    updatedAt: dataset.createdAt,
+    activeRevisionId: revisionId,
+    revisions: [{ id: revisionId, revisionNumber: 1, createdAt: dataset.createdAt, dataset }],
+  };
+}
+
+function normalizeDb(raw: unknown): AppDb {
+  const parsed = raw as Partial<AppDb> | undefined;
+  return {
+    campaigns: (parsed?.campaigns ?? []).map(normalizeStoredCampaign).filter((campaign): campaign is StoredCampaign => Boolean(campaign)),
+    ofcAccounts: parsed?.ofcAccounts ?? [],
+  };
+}
+
 function readDb(): AppDb {
   if (!fs.existsSync(dbPath)) return emptyDb();
-  return JSON.parse(fs.readFileSync(dbPath, "utf8")) as AppDb;
+  return normalizeDb(JSON.parse(fs.readFileSync(dbPath, "utf8")));
 }
 
 function writeDb(db: AppDb) {
@@ -140,14 +204,28 @@ function configFromRequest(raw: unknown): CampaignConfig {
   }
 }
 
-function buildCampaignRecord(dataset: CampaignDataset): StoredCampaign {
-  const campaignId = crypto.randomUUID();
+function resolveCampaignId(config: CampaignConfig) {
+  const explicitId = config.campaignId?.trim();
+  if (explicitId) return explicitId;
+  const nameKey = config.campaignName?.trim().replace(/\s+/g, "-");
+  return nameKey ? `campaign:${nameKey}` : crypto.randomUUID();
+}
+
+function activeRevision(campaign: StoredCampaign) {
+  return campaign.revisions.find((revision) => revision.id === campaign.activeRevisionId) ?? campaign.revisions[0];
+}
+
+function buildCampaignRevision(dataset: CampaignDataset, revisionNumber: number): StoredCampaignRevision {
+  const campaignId = resolveCampaignId(dataset.config);
+  const revisionDataset = {
+    ...dataset,
+    config: { ...dataset.config, campaignId },
+  };
   return {
-    id: campaignId,
-    dataset: {
-      ...dataset,
-      config: { ...dataset.config, campaignId },
-    },
+    id: crypto.randomUUID(),
+    revisionNumber,
+    createdAt: revisionDataset.createdAt || new Date().toISOString(),
+    dataset: revisionDataset,
   };
 }
 
@@ -163,15 +241,44 @@ function saveCampaign(dataset: CampaignDataset) {
     existing.set(ofc, account);
   }
 
-  const campaign = buildCampaignRecord(dataset);
-  db.campaigns = [campaign, ...db.campaigns];
+  const campaignId = resolveCampaignId(dataset.config);
+  const previous = db.campaigns.find((item) => item.id === campaignId);
+  const revision = buildCampaignRevision({ ...dataset, config: { ...dataset.config, campaignId } }, (previous?.revisions.length ?? 0) + 1);
+  const campaign: StoredCampaign = previous
+    ? {
+        ...previous,
+        campaignName: revision.dataset.config.campaignName,
+        updatedAt: revision.createdAt,
+        activeRevisionId: revision.id,
+        revisions: [revision, ...previous.revisions],
+      }
+    : {
+        id: campaignId,
+        campaignName: revision.dataset.config.campaignName,
+        createdAt: revision.createdAt,
+        updatedAt: revision.createdAt,
+        activeRevisionId: revision.id,
+        revisions: [revision],
+      };
+
+  db.campaigns = [campaign, ...db.campaigns.filter((item) => item.id !== campaignId)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   db.ofcAccounts = [...existing.values()].sort((a, b) => a.ofc.localeCompare(b.ofc, "ko"));
   writeDb(db);
-  return { campaign, generatedAccounts, accountCount: db.ofcAccounts.length };
+  return { campaign, revision, generatedAccounts, accountCount: db.ofcAccounts.length };
 }
 
 function campaignMetaFromRecord(campaign: StoredCampaign) {
-  return { ...campaignMeta(campaign.dataset), id: campaign.id };
+  const revision = activeRevision(campaign);
+  return {
+    ...campaignMeta(revision.dataset),
+    id: campaign.id,
+    campaignName: campaign.campaignName,
+    createdAt: campaign.createdAt,
+    updatedAt: campaign.updatedAt,
+    activeRevisionId: revision.id,
+    activeRevisionNumber: revision.revisionNumber,
+    revisionCount: campaign.revisions.length,
+  };
 }
 
 export function createApp() {
@@ -207,15 +314,15 @@ export function createApp() {
   });
 
   app.get("/api/dashboard/latest", requireUser, (_req, res) => {
-    const campaign = readDb().campaigns[0];
+    const campaign = readDb().campaigns.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     if (!campaign) return res.json({ dataset: null });
-    res.json({ dataset: dashboardForUser(campaign.dataset, res.locals.user as AuthenticatedUser) });
+    res.json({ dataset: dashboardForUser(activeRevision(campaign).dataset, res.locals.user as AuthenticatedUser) });
   });
 
   app.get("/api/dashboard/:campaignId", requireUser, (req, res) => {
     const campaign = readDb().campaigns.find((item) => item.id === req.params.campaignId);
     if (!campaign) return res.status(404).json({ error: "Campaign을 찾을 수 없습니다." });
-    res.json({ dataset: dashboardForUser(campaign.dataset, res.locals.user as AuthenticatedUser) });
+    res.json({ dataset: dashboardForUser(activeRevision(campaign).dataset, res.locals.user as AuthenticatedUser) });
   });
 
   app.post("/api/admin/campaigns/upload", requireUser, requireAdmin, upload.array("files"), async (req, res) => {
@@ -227,7 +334,7 @@ export function createApp() {
       campaign: campaignMetaFromRecord(saved.campaign),
       generatedAccounts: saved.generatedAccounts,
       accountCount: saved.accountCount,
-      dataset: dashboardForUser(saved.campaign.dataset, res.locals.user as AuthenticatedUser),
+      dataset: dashboardForUser(saved.revision.dataset, res.locals.user as AuthenticatedUser),
     });
   });
 
@@ -241,7 +348,23 @@ export function createApp() {
       campaign: campaignMetaFromRecord(saved.campaign),
       generatedAccounts: saved.generatedAccounts,
       accountCount: saved.accountCount,
-      dataset: dashboardForUser(saved.campaign.dataset, res.locals.user as AuthenticatedUser),
+      dataset: dashboardForUser(saved.revision.dataset, res.locals.user as AuthenticatedUser),
+    });
+  });
+
+  app.get("/api/admin/campaigns/:campaignId/revisions", requireUser, requireAdmin, (req, res) => {
+    const campaign = readDb().campaigns.find((item) => item.id === req.params.campaignId);
+    if (!campaign) return res.status(404).json({ error: "Campaign을 찾을 수 없습니다." });
+    res.json({
+      campaign: campaignMetaFromRecord(campaign),
+      revisions: campaign.revisions.map((revision) => ({
+        ...campaignMeta(revision.dataset),
+        id: revision.id,
+        campaignId: campaign.id,
+        revisionNumber: revision.revisionNumber,
+        createdAt: revision.createdAt,
+        active: revision.id === campaign.activeRevisionId,
+      })),
     });
   });
 

@@ -42,10 +42,35 @@ for (const name of sourceNames) {
 }
 
 const upload = await request<{
+  campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
   generatedAccounts: { ofc: string; userId: string; password: string }[];
   accountCount: number;
   dataset: Record<string, unknown>;
 }>("/api/admin/campaigns/upload", { method: "POST", body: formData }, admin.cookie);
+
+const secondFormData = new FormData();
+for (const name of sourceNames) {
+  const buffer = await fs.readFile(path.join(downloads, name));
+  secondFormData.append("files", new File([buffer], name, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+}
+
+const secondUpload = await request<{
+  campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
+}>("/api/admin/campaigns/upload", { method: "POST", body: secondFormData }, admin.cookie);
+
+const campaignList = await request<{
+  campaigns: { id: string; activeRevisionNumber?: number; revisionCount?: number }[];
+}>("/api/campaigns", {}, admin.cookie);
+
+if (campaignList.data.campaigns.length !== 1) {
+  throw new Error(`Same campaign upload created duplicate campaigns: ${campaignList.data.campaigns.length}`);
+}
+if (campaignList.data.campaigns[0].id !== upload.data.campaign.id) {
+  throw new Error("Re-upload changed campaign identity");
+}
+if (campaignList.data.campaigns[0].revisionCount !== 2 || campaignList.data.campaigns[0].activeRevisionNumber !== 2) {
+  throw new Error(`Revision tracking failed: ${JSON.stringify(campaignList.data.campaigns[0])}`);
+}
 
 const accounts = await request<{ accounts: { ofc: string; userId: string; password: string }[] }>("/api/admin/ofc-accounts", {}, admin.cookie);
 const targetAccount = accounts.data.accounts.find((account) => account.ofc !== "김수진1") ?? accounts.data.accounts[0];
@@ -82,6 +107,9 @@ console.log(JSON.stringify({
   adminUpload: {
     accountCount: upload.data.accountCount,
     generatedAccounts: upload.data.generatedAccounts.length,
+    firstRevision: upload.data.campaign.activeRevisionNumber,
+    secondRevision: secondUpload.data.campaign.activeRevisionNumber,
+    campaignCountAfterReupload: campaignList.data.campaigns.length,
     leakedRawFactsToAdminDashboard: ["dailyMetrics", "categoryMetrics", "productMetrics", "focusMetrics"].filter((key) =>
       Object.prototype.hasOwnProperty.call(upload.data.dataset, key),
     ),
