@@ -1,6 +1,6 @@
 import path from "node:path";
 import express from "express";
-import { createApp } from "./server/app";
+import { createApp } from "./server/app.js";
 
 const port = Number(process.env.PORT || 8080);
 const app = createApp();

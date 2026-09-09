@@ -1,4 +1,4 @@
-import { safeDiv } from "../utils/format";
+import { safeDiv } from "../utils/format.js";
 import type {
   AggregateMetric,
   CampaignConfig,
@@ -9,7 +9,7 @@ import type {
   QualityIssue,
   Store,
   StoreMetric,
-} from "../domain/types";
+} from "../domain/types.js";
 
 interface StoreMetricInput {
   config: CampaignConfig;

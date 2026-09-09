@@ -1,4 +1,4 @@
-import type { CampaignConfig } from "../domain/types";
+import type { CampaignConfig } from "../domain/types.js";
 
 export const defaultCampaignConfig: CampaignConfig = {
   campaignId: "2026-09-1",

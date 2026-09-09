@@ -8,8 +8,8 @@ import type {
   Store,
   StoreDailySeriesPoint,
   StoreMetric,
-} from "../domain/types";
-import { safeDiv } from "../utils/format";
+} from "../domain/types.js";
+import { safeDiv } from "../utils/format.js";
 
 function sum<T>(rows: T[], pick: (row: T) => number | undefined) {
   return rows.reduce((total, row) => total + (pick(row) ?? 0), 0);

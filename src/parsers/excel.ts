@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
-import { defaultCampaignConfig } from "../config/defaultConfig";
-import { aggregateAll, calculateStoreMetrics } from "../aggregations/aggregation";
+import { defaultCampaignConfig } from "../config/defaultConfig.js";
+import { aggregateAll, calculateStoreMetrics } from "../aggregations/aggregation.js";
 import type {
   CampaignConfig,
   CampaignDataset,
@@ -13,7 +13,7 @@ import type {
   ProductMetric,
   QualityIssue,
   Store,
-} from "../domain/types";
+} from "../domain/types.js";
 
 type Row = string[];
 

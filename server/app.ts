@@ -5,10 +5,10 @@ import path from "node:path";
 import express from "express";
 import multer from "multer";
 import * as XLSX from "xlsx";
-import { defaultCampaignConfig } from "../src/config/defaultConfig";
-import type { AuthenticatedUser, CampaignConfig, CampaignDataset, FileRole } from "../src/domain/types";
-import { parseCampaignFiles, type CampaignInputFile } from "../src/parsers/excel";
-import { campaignMeta, dashboardForUser } from "../src/server/scope";
+import { defaultCampaignConfig } from "../src/config/defaultConfig.js";
+import type { AuthenticatedUser, CampaignConfig, CampaignDataset, FileRole } from "../src/domain/types.js";
+import { parseCampaignFiles, type CampaignInputFile } from "../src/parsers/excel.js";
+import { campaignMeta, dashboardForUser } from "../src/server/scope.js";
 
 interface StoredCampaign {
   id: string;
