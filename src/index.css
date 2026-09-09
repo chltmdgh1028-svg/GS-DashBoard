@@ -1,0 +1,32 @@
+@import "pretendard/dist/web/variable/pretendardvariable.css";
+
+:root {
+  font-family: "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  color: #102033;
+  background: #f3f6fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1024px;
+}
+
+button,
+input,
+select,
+textarea {
+  letter-spacing: 0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
