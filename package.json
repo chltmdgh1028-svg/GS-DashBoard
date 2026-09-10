@@ -11,6 +11,7 @@
     "start": "npm run build && tsx server.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:api": "tsx scripts/test-api-routing.ts",
     "preview": "vite preview"
   },
   "dependencies": {
