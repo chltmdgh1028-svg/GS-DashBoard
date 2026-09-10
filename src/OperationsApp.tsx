@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
   Database,
-  FileSpreadsheet,
+  FolderOpen,
   History,
   LogOut,
   PackageCheck,
+  RefreshCw,
   Search,
   Settings,
   Store as StoreIcon,
-  Upload,
   Users,
 } from "lucide-react";
 import {
@@ -26,41 +26,14 @@ import {
 } from "recharts";
 import "./App.css";
 import { defaultCampaignConfig } from "./config/defaultConfig";
+import { fileRoleLabels as roleLabels, optionalCampaignFileRoles, requiredCampaignFileRoles } from "./domain/fileRoles";
 import type { AggregateMetric, AuthenticatedUser, CampaignConfig, CampaignListItem, DashboardDataset, FileRole } from "./domain/types";
 import { formatNumber, formatPercent, formatWonThousand, safeDiv } from "./utils/format";
 
-type View = "upload" | "national" | "team" | "ofc" | "store" | "focus" | "quality" | "config" | "history";
+type View = "localSync" | "national" | "team" | "ofc" | "store" | "focus" | "quality" | "config" | "history";
 
-const roleLabels: Record<FileRole, string> = {
-  storeMaster: "신선강화 점포 Master",
-  organizationMaster: "조직 Master",
-  operatingDays: "1. 영업일수",
-  currentDaily: "2. 일자별매출/매입원가",
-  previousDaily: "3. 직전전단매출",
-  categoryMetrics: "4. 대분류매출/매출이익",
-  wasteCost: "5. 폐기원가",
-  productMetrics: "6. 점별 상품실적",
-  focusProducts: "7. 중점취급상품",
-  freshSales: "8. 신선매출",
-  target: "전단행사 목표",
-  reference: "기존 작업용 Reference",
-  unknown: "미분류",
-};
-
-const requiredRoles: FileRole[] = [
-  "storeMaster",
-  "organizationMaster",
-  "operatingDays",
-  "currentDaily",
-  "previousDaily",
-  "categoryMetrics",
-  "wasteCost",
-  "productMetrics",
-  "focusProducts",
-  "freshSales",
-];
-
-const pasteRoles: FileRole[] = [...requiredRoles, "target"];
+const requiredRoles: FileRole[] = requiredCampaignFileRoles;
+const optionalRoles: FileRole[] = optionalCampaignFileRoles;
 
 const qualityCategoryLabels = {
   actualData: "실제 데이터 오류",
@@ -202,97 +175,207 @@ function SummaryTable({ rows, onClick }: { rows: AggregateMetric[]; onClick?: (r
   );
 }
 
-function UploadView({
+function LocalSyncView({
   dataset,
   config,
   busy,
   message,
-  onUpload,
-  onPaste,
+  onSyncComplete,
 }: {
   dataset?: DashboardDataset;
   config: CampaignConfig;
   busy: boolean;
   message: string;
-  onUpload: (files: FileList | null) => void;
-  onPaste: (entries: { role: FileRole; name: string; tsv: string }[]) => void;
+  onSyncComplete: (dataset: DashboardDataset, generatedAccounts: unknown[], accountCount: number) => Promise<void>;
 }) {
-  const [pasteEntries, setPasteEntries] = useState<{ role: FileRole; name: string; tsv: string }[]>([]);
-  const [pasteRole, setPasteRole] = useState<FileRole>("storeMaster");
-  const [pasteName, setPasteName] = useState("");
-  const [pasteTsv, setPasteTsv] = useState("");
-  const found = new Set(Object.values(dataset?.fileRoles ?? {}));
+  const [agentUrl, setAgentUrl] = useState("http://127.0.0.1:8787");
+  const [folderPath, setFolderPath] = useState("C:\\GS-Dashboard\\Input");
+  const [agentMessage, setAgentMessage] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [health, setHealth] = useState<{ ok: boolean; folderConnected: boolean; lastSyncAt?: string }>();
+  const [scan, setScan] = useState<{
+    connected: boolean;
+    folderPath: string;
+    changedSinceLastSync: boolean;
+    missingRoles: FileRole[];
+    files: { role: FileRole; label: string; found: boolean; name?: string; modifiedAt?: string; hash?: string; changed?: boolean }[];
+  }>();
+  const found = new Set(scan?.files.filter((file) => file.found).map((file) => file.role) ?? Object.values(dataset?.fileRoles ?? {}));
+  const missingCount = scan?.missingRoles.length ?? requiredRoles.filter((role) => !found.has(role)).length;
+  const ready = Boolean(health?.ok && scan?.connected && missingCount === 0);
+
+  const agentApi = useCallback(async <T,>(pathName: string, init?: RequestInit): Promise<T> => {
+    const response = await fetch(`${agentUrl}${pathName}`, init);
+    const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+    if (!response.ok) throw new Error(data.error || "Local Agent 요청을 처리하지 못했습니다.");
+    return data;
+  }, [agentUrl]);
+
+  const checkAgent = useCallback(async () => {
+    setAgentBusy(true);
+    setAgentMessage("");
+    try {
+      const nextHealth = await agentApi<{ ok: boolean; folderPath: string; folderConnected: boolean; lastSyncAt?: string }>("/health");
+      setHealth(nextHealth);
+      setFolderPath(nextHealth.folderPath);
+      const nextScan = await agentApi<typeof scan>("/files");
+      setScan(nextScan);
+      setAgentMessage(nextHealth.folderConnected ? "Local Agent 연결 및 폴더 확인 완료" : "Local Agent는 연결됐지만 폴더에 접근할 수 없습니다.");
+    } catch (error) {
+      setHealth(undefined);
+      setScan(undefined);
+      setAgentMessage(error instanceof Error ? error.message : "Local Agent 연결 안 됨");
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [agentApi]);
+
+  async function saveFolder() {
+    setAgentBusy(true);
+    setAgentMessage("");
+    try {
+      const result = await agentApi<{ folderPath: string; folderConnected: boolean }>("/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderPath }),
+      });
+      setFolderPath(result.folderPath);
+      setAgentMessage(result.folderConnected ? "이 PC의 Local Agent 폴더 설정을 저장했습니다." : "폴더 설정은 저장했지만 현재 접근할 수 없습니다.");
+      await checkAgent();
+    } catch (error) {
+      setAgentMessage(error instanceof Error ? error.message : "폴더 설정 저장 실패");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function selectFolder() {
+    setAgentBusy(true);
+    setAgentMessage("");
+    try {
+      const result = await agentApi<{ canceled?: boolean; folderPath: string; folderConnected?: boolean }>("/select-folder", {
+        method: "POST",
+      });
+      setFolderPath(result.folderPath);
+      setAgentMessage(result.canceled ? "폴더 선택을 취소했습니다." : "선택한 폴더를 이 PC의 Local Agent 설정에 저장했습니다.");
+      await checkAgent();
+    } catch (error) {
+      setAgentMessage(error instanceof Error ? error.message : "폴더 선택 실패");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function syncCampaign() {
+    setAgentBusy(true);
+    setAgentMessage("");
+    try {
+      const tokenResult = await api<{ token: string; agentUrl: string }>("/api/admin/local-sync-token", { method: "POST" });
+      const syncResult = await agentApi<{
+        status: "COMPLETED" | "UNCHANGED";
+        message?: string;
+        central?: { dataset: DashboardDataset; generatedAccounts: unknown[]; accountCount: number };
+      }>("/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: tokenResult.token,
+          centralUrl: window.location.origin,
+          config,
+        }),
+      });
+      if (syncResult.status === "UNCHANGED" || !syncResult.central) {
+        setAgentMessage(syncResult.message || "마지막 반영 이후 변경된 파일이 없습니다.");
+        await checkAgent();
+        return;
+      }
+      await onSyncComplete(syncResult.central.dataset, syncResult.central.generatedAccounts, syncResult.central.accountCount);
+      setAgentMessage("Local Agent 자료를 Active Campaign Revision으로 반영했습니다.");
+      await checkAgent();
+    } catch (error) {
+      setAgentMessage(error instanceof Error ? error.message : "Campaign 반영 실패");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void checkAgent();
+  }, [checkAgent]);
 
   return (
     <section className="view-stack">
       <div className="page-title">
         <div>
-          <h1>ADMIN Campaign 생성</h1>
-          <p>원시 Excel은 본사 ADMIN만 입력합니다. 서버가 분석/가공 후 중앙 Snapshot으로 저장합니다.</p>
+          <h1>로컬 데이터 연결</h1>
+          <p>이 PC의 Local Agent가 지정 폴더를 읽고, 중앙 서버에는 가공된 Campaign Snapshot만 반영합니다.</p>
         </div>
-        <label className="primary-action">
-          <Upload size={18} />
-          Excel 업로드
-          <input type="file" accept=".xlsx,.xls" multiple onChange={(event) => onUpload(event.target.files)} />
-        </label>
+        <button className="primary-action button secondary" onClick={checkAgent} disabled={agentBusy || busy}>
+          <RefreshCw size={18} />
+          다시 확인
+        </button>
       </div>
 
       <div className="upload-panel">
-        <FileSpreadsheet size={42} />
-        <strong>{busy ? "서버에서 자료 생성 중" : "Excel 파일 업로드 또는 범위 붙여넣기"}</strong>
-        <span>OFC 브라우저에서는 업로드/파싱이 실행되지 않습니다.</span>
+        <FolderOpen size={42} />
+        <strong>{health?.ok ? "Local Agent 연결됨" : "Local Agent 연결 안 됨"}</strong>
+        <span>Agent는 관리자 PC의 127.0.0.1에서만 실행되며, 폴더 경로는 이 PC 설정에만 저장됩니다.</span>
+      </div>
+
+      <div className="panel local-agent-panel">
+        <h2>연결 폴더</h2>
+        <div className="folder-row">
+          <input value={agentUrl} onChange={(event) => setAgentUrl(event.target.value)} placeholder="http://127.0.0.1:8787" />
+          <input value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="C:\GS-Dashboard\Input" />
+          <button className="primary-action button secondary" onClick={selectFolder} disabled={agentBusy || busy}>
+            폴더 선택
+          </button>
+          <button className="primary-action button secondary" onClick={saveFolder} disabled={agentBusy || busy}>
+            폴더 저장
+          </button>
+          <button className="primary-action button" onClick={syncCampaign} disabled={!ready || agentBusy || busy}>
+            Campaign 반영
+          </button>
+        </div>
+        <p className={ready ? "message" : "message error-text"}>
+          {agentMessage || (ready ? "필수 파일을 모두 확인했습니다." : "Local Agent 실행 및 필수 파일 확인이 필요합니다.")}
+        </p>
+        {health?.lastSyncAt && <p className="muted">마지막 반영 {new Date(health.lastSyncAt).toLocaleString("ko-KR")}</p>}
+        {scan && (
+          <p className="muted">
+            폴더 {scan.folderPath} · 필수 {formatNumber(requiredRoles.length - missingCount)} / {formatNumber(requiredRoles.length)} 확인
+            {scan.changedSinceLastSync ? " · 마지막 반영 이후 변경 있음" : " · 마지막 반영 이후 변경 없음"}
+          </p>
+        )}
       </div>
 
       <div className="role-grid">
-        {[...requiredRoles, "target"].map((role) => (
-          <div className={`role-item ${found.has(role as FileRole) ? "ok" : role === "target" ? "optional" : ""}`} key={role}>
+        {[...requiredRoles, ...optionalRoles].map((role) => {
+          const file = scan?.files.find((item) => item.role === role);
+          return (
+          <div className={`role-item ${found.has(role) ? "ok" : optionalRoles.includes(role) ? "optional" : ""}`} key={role}>
             <CheckCircle2 size={17} />
-            <span>{roleLabels[role as FileRole]}</span>
-            <small>{found.has(role as FileRole) ? "저장됨" : role === "target" ? "선택" : "필수"}</small>
+            <span>{roleLabels[role]}</span>
+            <small>{file?.name ?? (optionalRoles.includes(role) ? "선택" : "필수")}</small>
+            {file?.modifiedAt && <small>{new Date(file.modifiedAt).toLocaleString("ko-KR")}{file.changed ? " · 변경" : ""}</small>}
           </div>
-        ))}
+          );
+        })}
       </div>
 
-      <div className="two-col">
-        <div className="panel">
-          <h2>Excel 범위 붙여넣기</h2>
-          <div className="form-grid">
-            <select value={pasteRole} onChange={(event) => setPasteRole(event.target.value as FileRole)}>
-              {pasteRoles.map((role) => <option key={role} value={role}>{roleLabels[role]}</option>)}
-            </select>
-            <input value={pasteName} onChange={(event) => setPasteName(event.target.value)} placeholder="붙여넣기 이름" />
-            <textarea value={pasteTsv} onChange={(event) => setPasteTsv(event.target.value)} placeholder="Excel에서 필요한 범위를 복사한 뒤 여기에 붙여넣기" />
-            <button
-              className="primary-action button"
-              onClick={() => {
-                if (!pasteTsv.trim()) return;
-                setPasteEntries((prev) => [...prev, { role: pasteRole, name: pasteName || roleLabels[pasteRole], tsv: pasteTsv }]);
-                setPasteName("");
-                setPasteTsv("");
-              }}
-            >
-              붙여넣기 항목 추가
-            </button>
-            <button className="primary-action button secondary" onClick={() => onPaste(pasteEntries)} disabled={!pasteEntries.length || busy}>
-              붙여넣기 데이터로 Snapshot 생성
-            </button>
-          </div>
-          <p>추가된 항목 {formatNumber(pasteEntries.length)}개 · 현재 설정 {config.campaignName}</p>
-        </div>
-        <div className="panel">
-          <h2>처리 결과</h2>
-          {message && <p className="message">{message}</p>}
-          {dataset?.fileRoles && (
-            <DataTable
-              compact
-              rows={Object.entries(dataset.fileRoles)}
-              columns={[
-                { key: "file", header: "입력", render: ([file]) => file, align: "left" },
-                { key: "role", header: "역할", render: ([, role]) => roleLabels[role] ?? role },
-              ]}
-            />
-          )}
-        </div>
+      <div className="panel">
+        <h2>처리 결과</h2>
+        {message && <p className="message">{message}</p>}
+        {dataset?.fileRoles && (
+          <DataTable
+            compact
+            rows={Object.entries(dataset.fileRoles)}
+            columns={[
+              { key: "file", header: "입력", render: ([file]) => file, align: "left" },
+              { key: "role", header: "역할", render: ([, role]) => roleLabels[role] ?? role },
+            ]}
+          />
+        )}
       </div>
     </section>
   );
@@ -615,7 +698,7 @@ function ConfigView({ config, setConfig }: { config: CampaignConfig; setConfig: 
           onClick={() => {
             try {
               setConfig(JSON.parse(json) as CampaignConfig);
-              setMessage("설정을 반영했습니다. 다음 업로드/붙여넣기 Snapshot부터 적용됩니다.");
+              setMessage("설정을 반영했습니다. 다음 Local Agent 반영부터 적용됩니다.");
             } catch {
               setMessage("JSON 형식을 확인하세요.");
             }
@@ -668,7 +751,7 @@ function EmptyState() {
     <section className="empty-state">
       <Database size={42} />
       <strong>저장된 Campaign이 없습니다</strong>
-      <span>본사 ADMIN이 원시 Excel을 업로드하면 OFC 사용자가 조회할 수 있습니다.</span>
+      <span>본사 ADMIN이 Local Agent로 Campaign을 반영하면 OFC 사용자가 조회할 수 있습니다.</span>
     </section>
   );
 }
@@ -721,45 +804,17 @@ export default function OperationsApp() {
     await loadDashboard();
   }
 
-  async function handleUpload(fileList: FileList | null) {
-    if (!fileList?.length) return;
+  async function handleLocalSyncComplete(nextDataset: DashboardDataset, generatedAccounts: unknown[], accountCount: number) {
     setBusy(true);
     setMessage("");
     try {
-      const formData = new FormData();
-      [...fileList].forEach((file) => formData.append("files", file));
-      formData.append("config", JSON.stringify(config));
-      const result = await api<{ dataset: DashboardDataset; generatedAccounts: unknown[]; accountCount: number }>("/api/admin/campaigns/upload", {
-        method: "POST",
-        body: formData,
-      });
-      setDataset(result.dataset);
-      if (result.dataset.adminConfig) setConfig(result.dataset.adminConfig);
-      setMessage(`Snapshot 저장 완료 · 신규 OFC 계정 ${formatNumber(result.generatedAccounts.length)}개 · 총 계정 ${formatNumber(result.accountCount)}개`);
+      setDataset(nextDataset);
+      if (nextDataset.adminConfig) setConfig(nextDataset.adminConfig);
+      setMessage(`Local Agent Snapshot 반영 완료 · 신규 OFC 계정 ${formatNumber(generatedAccounts.length)}개 · 총 계정 ${formatNumber(accountCount)}개`);
       await loadDashboard();
-      setView(result.dataset.issues?.some((issue) => issue.severity === "error") ? "quality" : "national");
+      setView(nextDataset.issues?.some((issue) => issue.severity === "error") ? "quality" : "national");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "업로드 실패");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handlePaste(entries: { role: FileRole; name: string; tsv: string }[]) {
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await api<{ dataset: DashboardDataset; generatedAccounts: unknown[]; accountCount: number }>("/api/admin/campaigns/paste", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries, config }),
-      });
-      setDataset(result.dataset);
-      if (result.dataset.adminConfig) setConfig(result.dataset.adminConfig);
-      setMessage(`붙여넣기 Snapshot 저장 완료 · 신규 OFC 계정 ${formatNumber(result.generatedAccounts.length)}개 · 총 계정 ${formatNumber(result.accountCount)}개`);
-      await loadDashboard();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "붙여넣기 처리 실패");
+      setMessage(error instanceof Error ? error.message : "Local Agent 반영 실패");
     } finally {
       setBusy(false);
     }
@@ -780,7 +835,7 @@ export default function OperationsApp() {
     ["ofc", "OFC 보기", Users],
     ["store", "점포 상세", StoreIcon],
     ["focus", "중점상품", PackageCheck],
-    ["upload", "데이터 입력", Upload],
+    ["localSync", "데이터 입력", FolderOpen],
     ["quality", "데이터 검증", AlertTriangle],
     ["config", "Campaign 설정", Settings],
     ["history", "Campaign 관리", History],
@@ -821,8 +876,8 @@ export default function OperationsApp() {
       </aside>
 
       <main>
-        {view === "upload" && isAdmin && <UploadView dataset={dataset} config={config} busy={busy} message={message} onUpload={handleUpload} onPaste={handlePaste} />}
-        {!dataset && view !== "upload" && view !== "config" && <EmptyState />}
+        {view === "localSync" && isAdmin && <LocalSyncView dataset={dataset} config={config} busy={busy} message={message} onSyncComplete={handleLocalSyncComplete} />}
+        {!dataset && view !== "localSync" && view !== "config" && <EmptyState />}
         {dataset && view === "national" && <NationalView dataset={dataset} goTeam={(team) => { setSelectedTeam(team); setView("team"); }} />}
         {dataset && view === "team" && <TeamView dataset={dataset} selectedTeam={selectedTeam} onTeamChange={setSelectedTeam} goOfc={(team, ofc) => { setSelectedTeam(team); setSelectedOFC(ofc); setView("ofc"); }} />}
         {dataset && view === "ofc" && <OfcView dataset={dataset} selectedTeam={selectedTeam} selectedOFC={selectedOFC} onStore={(storeId) => { setSelectedStoreId(storeId); setView("store"); }} />}

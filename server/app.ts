@@ -3,11 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
-import multer from "multer";
-import * as XLSX from "xlsx";
-import { defaultCampaignConfig } from "../src/config/defaultConfig.js";
-import type { AuthenticatedUser, CampaignConfig, CampaignDataset, FileRole } from "../src/domain/types.js";
-import { parseCampaignFiles, type CampaignInputFile } from "../src/parsers/excel.js";
+import type { AuthenticatedUser, CampaignConfig, CampaignDataset } from "../src/domain/types.js";
 import { campaignMeta, dashboardForUser } from "../src/server/scope.js";
 
 interface StoredCampaign {
@@ -37,19 +33,15 @@ interface AppDb {
   ofcAccounts: OfcAccount[];
 }
 
-interface PasteEntry {
-  role: FileRole;
-  name?: string;
-  tsv: string;
-}
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024, files: 20 } });
 const adminId = process.env.ADMIN_ID || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin";
+const syncTokenSecret = process.env.SYNC_TOKEN_SECRET || `${adminId}:${adminPassword}`;
+const syncTokenTtlMs = Number(process.env.SYNC_TOKEN_TTL_MS || 5 * 60 * 1000);
 const defaultDataDir = process.env.VERCEL ? path.join(os.tmpdir(), "gs-dashboard-data") : path.join(process.cwd(), "data");
 const dataDir = process.env.DATA_DIR || defaultDataDir;
 const dbPath = path.join(dataDir, "app-db.json");
 const sessions = new Map<string, AuthenticatedUser>();
+const usedSyncTokens = new Map<string, number>();
 
 function emptyDb(): AppDb {
   return { campaigns: [], ofcAccounts: [] };
@@ -164,51 +156,60 @@ function requireAdmin(_req: express.Request, res: express.Response, next: expres
   next();
 }
 
-function bufferToInputFile(file: Express.Multer.File): CampaignInputFile {
-  return {
-    name: file.originalname,
-    arrayBuffer: async () => {
-      const copy = new Uint8Array(file.buffer.byteLength);
-      copy.set(file.buffer);
-      return copy.buffer;
-    },
-  };
-}
-
-function parseTsv(tsv: string) {
-  return tsv
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => line.split("\t"));
-}
-
-function pasteEntryToInputFile(entry: PasteEntry): CampaignInputFile {
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(parseTsv(entry.tsv)), "붙여넣기");
-  const bytes = XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
-  return {
-    name: entry.name || `paste-${entry.role}.xlsx`,
-    forcedRole: entry.role,
-    arrayBuffer: async () => bytes,
-  };
-}
-
-function configFromRequest(raw: unknown): CampaignConfig {
-  if (!raw) return structuredClone(defaultCampaignConfig);
-  try {
-    return { ...structuredClone(defaultCampaignConfig), ...(typeof raw === "string" ? JSON.parse(raw) : raw) };
-  } catch {
-    return structuredClone(defaultCampaignConfig);
-  }
-}
-
 function resolveCampaignId(config: CampaignConfig) {
   const explicitId = config.campaignId?.trim();
   if (explicitId) return explicitId;
   const nameKey = config.campaignName?.trim().replace(/\s+/g, "-");
   return nameKey ? `campaign:${nameKey}` : crypto.randomUUID();
+}
+
+function pruneUsedSyncTokens(now = Date.now()) {
+  for (const [jti, expiresAt] of usedSyncTokens) {
+    if (expiresAt <= now) usedSyncTokens.delete(jti);
+  }
+}
+
+function base64UrlJson(value: unknown) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function signSyncPayload(payload: string) {
+  return crypto.createHmac("sha256", syncTokenSecret).update(payload).digest("base64url");
+}
+
+function issueSyncToken(user: AuthenticatedUser) {
+  const now = Date.now();
+  const payload = base64UrlJson({
+    jti: crypto.randomUUID(),
+    sub: user.userId,
+    role: user.role,
+    iat: now,
+    exp: now + syncTokenTtlMs,
+  });
+  return `${payload}.${signSyncPayload(payload)}`;
+}
+
+function verifySyncToken(token: unknown) {
+  if (typeof token !== "string" || !token.includes(".")) return { ok: false, error: "Sync Token이 없습니다." };
+  const [payload, signature] = token.split(".");
+  const expected = signSyncPayload(payload);
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    return { ok: false, error: "Sync Token이 올바르지 않습니다." };
+  }
+
+  let data: { jti?: string; role?: string; exp?: number };
+  try {
+    data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { jti?: string; role?: string; exp?: number };
+  } catch {
+    return { ok: false, error: "Sync Token 형식이 올바르지 않습니다." };
+  }
+  const now = Date.now();
+  pruneUsedSyncTokens(now);
+  if (data.role !== "admin" || !data.jti || !data.exp) return { ok: false, error: "Sync Token 권한이 올바르지 않습니다." };
+  if (data.exp <= now) return { ok: false, error: "Sync Token이 만료되었습니다." };
+  if (usedSyncTokens.has(data.jti)) return { ok: false, error: "이미 사용된 Sync Token입니다." };
+  usedSyncTokens.set(data.jti, data.exp);
+  return { ok: true, error: "" };
 }
 
 function activeRevision(campaign: StoredCampaign) {
@@ -325,30 +326,29 @@ export function createApp() {
     res.json({ dataset: dashboardForUser(activeRevision(campaign).dataset, res.locals.user as AuthenticatedUser) });
   });
 
-  app.post("/api/admin/campaigns/upload", requireUser, requireAdmin, upload.array("files"), async (req, res) => {
-    const files = (req.files as Express.Multer.File[] | undefined)?.map(bufferToInputFile) ?? [];
-    if (!files.length) return res.status(400).json({ error: "업로드된 Excel 파일이 없습니다." });
-    const dataset = await parseCampaignFiles(files, configFromRequest(req.body.config));
-    const saved = saveCampaign(dataset);
+  app.post("/api/admin/local-sync-token", requireUser, requireAdmin, (_req, res) => {
+    const token = issueSyncToken(res.locals.user as AuthenticatedUser);
     res.json({
-      campaign: campaignMetaFromRecord(saved.campaign),
-      generatedAccounts: saved.generatedAccounts,
-      accountCount: saved.accountCount,
-      dataset: dashboardForUser(saved.revision.dataset, res.locals.user as AuthenticatedUser),
+      token,
+      expiresAt: new Date(Date.now() + syncTokenTtlMs).toISOString(),
+      agentUrl: process.env.LOCAL_AGENT_URL || "http://127.0.0.1:8787",
     });
   });
 
-  app.post("/api/admin/campaigns/paste", requireUser, requireAdmin, async (req, res) => {
-    const entries = (req.body?.entries ?? []) as PasteEntry[];
-    const files = entries.filter((entry) => entry.role && entry.tsv?.trim()).map(pasteEntryToInputFile);
-    if (!files.length) return res.status(400).json({ error: "붙여넣기 데이터가 없습니다." });
-    const dataset = await parseCampaignFiles(files, configFromRequest(req.body?.config));
+  app.post("/api/admin/campaigns/local-sync", (req, res) => {
+    const verified = verifySyncToken(req.body?.token);
+    if (!verified.ok) return res.status(401).json({ error: verified.error });
+    const dataset = req.body?.dataset as CampaignDataset | undefined;
+    if (!dataset?.config || !Array.isArray(dataset.stores) || !Array.isArray(dataset.storeMetrics)) {
+      return res.status(400).json({ error: "Local Agent Snapshot 데이터 형식이 올바르지 않습니다." });
+    }
     const saved = saveCampaign(dataset);
+    const systemAdmin: AuthenticatedUser = { role: "admin", userId: "local-agent", displayName: "Local Agent" };
     res.json({
       campaign: campaignMetaFromRecord(saved.campaign),
       generatedAccounts: saved.generatedAccounts,
       accountCount: saved.accountCount,
-      dataset: dashboardForUser(saved.revision.dataset, res.locals.user as AuthenticatedUser),
+      dataset: dashboardForUser(saved.revision.dataset, systemAdmin),
     });
   });
 

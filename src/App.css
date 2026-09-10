@@ -236,6 +236,28 @@ select {
   color: #63758a;
 }
 
+.local-agent-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.folder-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(320px, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.folder-row input {
+  min-width: 0;
+}
+
+.muted {
+  margin: 0;
+  color: #63758a;
+  font-size: 13px;
+}
+
 .role-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -268,6 +290,10 @@ select {
 
 .role-item span {
   color: #102033;
+}
+
+.role-item small:last-child {
+  grid-column: 2 / 4;
 }
 
 .role-item small {

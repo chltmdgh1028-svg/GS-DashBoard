@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 import { defaultCampaignConfig } from "../config/defaultConfig.js";
 import { aggregateAll, calculateStoreMetrics } from "../aggregations/aggregation.js";
+import { requiredCampaignFileRoles } from "../domain/fileRoles.js";
 import type {
   CampaignConfig,
   CampaignDataset,
@@ -126,6 +127,10 @@ async function loadWorkbook(file: CampaignInputFile): Promise<LoadedWorkbook> {
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { cellDates: true, cellFormula: true });
   return { fileName: file.name, workbook, role: file.forcedRole ?? classifyWorkbook(file.name, workbook) };
+}
+
+export async function classifyCampaignInputFile(file: CampaignInputFile): Promise<FileRole> {
+  return (await loadWorkbook(file)).role;
 }
 
 function addAlias(store: Store, value: unknown) {
@@ -603,8 +608,7 @@ function mergeStores(masterStores: Store[], orgStores: Store[], issues: QualityI
 }
 
 function validateRequiredRoles(fileRoles: Record<string, FileRole>, issues: QualityIssue[]) {
-  const required: FileRole[] = ["storeMaster", "organizationMaster", "operatingDays", "currentDaily", "previousDaily", "categoryMetrics", "wasteCost", "productMetrics", "focusProducts", "freshSales"];
-  for (const role of required) {
+  for (const role of requiredCampaignFileRoles) {
     if (!Object.values(fileRoles).includes(role)) {
       issues.push({ severity: "error", category: "actualData", title: "필수 파일 누락", detail: `${role} 역할의 파일을 찾지 못했습니다.` });
     }

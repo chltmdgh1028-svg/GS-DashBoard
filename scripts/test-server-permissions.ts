@@ -1,21 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { File } from "node:buffer";
+import { aggregateAll, calculateStoreMetrics } from "../src/aggregations/aggregation.js";
+import { defaultCampaignConfig } from "../src/config/defaultConfig.js";
+import type { CampaignDataset, DailyMetric, FocusStoreMetric, ProductMetric, Store } from "../src/domain/types.js";
 
 const baseUrl = process.env.TEST_BASE_URL || "http://127.0.0.1:8090";
-const downloads = "C:/Users/Administrator/Downloads";
-const sourceNames = [
-  "신선강화 점포전개리스트(26.09.07)(공유용) 2 (1).xlsx",
-  "조직도(260907)_안내용 (1).xlsx",
-  "1.영업일수 (2).xlsx",
-  "2.일자별매출액,매입원가 (3).xlsx",
-  "3.직전전단매출액.xlsx",
-  "4.대분류매출,매출이익 (2).xlsx",
-  "5.폐기원가 (2).xlsx",
-  "6.점별 입고,매출,매출액 (2).xlsx",
-  "7.중점취급상품 (3).xlsx",
-  "8.신선매출 (4).xlsx",
-];
 
 async function request<T>(pathName: string, init: RequestInit = {}, cookie = "") {
   const headers = new Headers(init.headers);
@@ -34,55 +21,135 @@ async function login(userId: string, password: string) {
   });
 }
 
+function buildDataset(): CampaignDataset {
+  const config = {
+    ...structuredClone(defaultCampaignConfig),
+    campaignId: "permission-test",
+    campaignName: "권한 테스트 Campaign",
+    focusUnits: [{ focusUnitId: "focus-a", focusUnitName: "중점 A", productCodes: ["P1"] }],
+    targetByBusinessUnit: {},
+  };
+  const stores: Store[] = [
+    {
+      storeId: "V001",
+      storeName: "테스트점A",
+      currentCode: "V001",
+      aliases: ["V001"],
+      businessUnit: "1부문",
+      region: "1지역",
+      team: "1팀",
+      ofc: "OFC-A",
+      storeType: "GS1타입",
+    },
+    {
+      storeId: "V002",
+      storeName: "테스트점B",
+      currentCode: "V002",
+      aliases: ["V002"],
+      businessUnit: "1부문",
+      region: "1지역",
+      team: "1팀",
+      ofc: "OFC-B",
+      storeType: "GS1타입",
+    },
+  ];
+  const dailyMetrics: DailyMetric[] = [
+    { campaignId: config.campaignId, storeId: "V001", date: "2026-09-01", dayIndex: 0, salesAmount: 1000, purchaseCost: 500, periodType: "current" },
+    { campaignId: config.campaignId, storeId: "V002", date: "2026-09-01", dayIndex: 0, salesAmount: 2000, purchaseCost: 800, periodType: "current" },
+  ];
+  const productMetrics: ProductMetric[] = [
+    { campaignId: config.campaignId, storeId: "V001", productCode: "P1", productName: "상품1", categoryCode: "05", categoryName: "채소", inboundQty: 1, salesQty: 1, salesAmount: 1000 },
+    { campaignId: config.campaignId, storeId: "V002", productCode: "P1", productName: "상품1", categoryCode: "05", categoryName: "채소", inboundQty: 1, salesQty: 1, salesAmount: 2000 },
+  ];
+  const focusMetrics: FocusStoreMetric[] = [
+    { campaignId: config.campaignId, storeId: "V001", focusUnitId: "focus-a", focusUnitName: "중점 A", productCodes: ["P1"], orderQty: 1, handled: true },
+    { campaignId: config.campaignId, storeId: "V002", focusUnitId: "focus-a", focusUnitName: "중점 A", productCodes: ["P1"], orderQty: 1, handled: true },
+  ];
+  const issues = [];
+  const storeMetrics = calculateStoreMetrics({
+    config,
+    stores,
+    operatingDays: new Map([["V001", 1], ["V002", 1]]),
+    dailyMetrics,
+    categoryMetrics: [],
+    productMetrics,
+    focusMetrics,
+    wasteCosts: new Map(),
+    freshSales: new Map(),
+    groupForCategory: () => "fresh",
+    issues,
+  });
+  return {
+    config,
+    fileRoles: {},
+    stores,
+    dailyMetrics,
+    categoryMetrics: [],
+    productMetrics,
+    focusMetrics,
+    storeMetrics,
+    productCatalog: [{ productCode: "P1", productName: "상품1", categoryCode: "05", categoryName: "채소" }],
+    focusUnits: config.focusUnits,
+    aggregates: aggregateAll(stores, storeMetrics),
+    issues,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 const admin = await login("admin", "admin");
-const formData = new FormData();
-for (const name of sourceNames) {
-  const buffer = await fs.readFile(path.join(downloads, name));
-  formData.append("files", new File([buffer], name, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+const dataset = buildDataset();
+
+async function issueSyncToken() {
+  const token = await request<{ token: string }>("/api/admin/local-sync-token", { method: "POST" }, admin.cookie);
+  return token.data.token;
 }
 
-const upload = await request<{
-  campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
-  generatedAccounts: { ofc: string; userId: string; password: string }[];
-  accountCount: number;
-  dataset: Record<string, unknown>;
-}>("/api/admin/campaigns/upload", { method: "POST", body: formData }, admin.cookie);
-
-const secondFormData = new FormData();
-for (const name of sourceNames) {
-  const buffer = await fs.readFile(path.join(downloads, name));
-  secondFormData.append("files", new File([buffer], name, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+async function syncDataset(tokenValue: string) {
+  return request<{
+    campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
+    generatedAccounts: { ofc: string; userId: string; password: string }[];
+    accountCount: number;
+    dataset: Record<string, unknown>;
+  }>("/api/admin/campaigns/local-sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: tokenValue, dataset }),
+  });
 }
 
-const secondUpload = await request<{
-  campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
-}>("/api/admin/campaigns/upload", { method: "POST", body: secondFormData }, admin.cookie);
+const firstToken = await issueSyncToken();
+const firstSync = await syncDataset(firstToken);
 
+const invalidTokenResponse = await fetch(`${baseUrl}/api/admin/campaigns/local-sync`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ token: "invalid-token" }),
+});
+if (invalidTokenResponse.status !== 401) throw new Error(`Invalid sync token was not rejected: ${invalidTokenResponse.status}`);
+
+const replayResponse = await fetch(`${baseUrl}/api/admin/campaigns/local-sync`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ token: firstToken }),
+});
+if (replayResponse.status !== 401) throw new Error(`Replay sync token was not rejected: ${replayResponse.status}`);
+
+const secondSync = await syncDataset(await issueSyncToken());
 const campaignList = await request<{
   campaigns: { id: string; activeRevisionNumber?: number; revisionCount?: number }[];
 }>("/api/campaigns", {}, admin.cookie);
 
-if (campaignList.data.campaigns.length !== 1) {
-  throw new Error(`Same campaign upload created duplicate campaigns: ${campaignList.data.campaigns.length}`);
-}
-if (campaignList.data.campaigns[0].id !== upload.data.campaign.id) {
-  throw new Error("Re-upload changed campaign identity");
-}
+if (campaignList.data.campaigns.length !== 1) throw new Error(`Duplicate campaigns created: ${campaignList.data.campaigns.length}`);
 if (campaignList.data.campaigns[0].revisionCount !== 2 || campaignList.data.campaigns[0].activeRevisionNumber !== 2) {
   throw new Error(`Revision tracking failed: ${JSON.stringify(campaignList.data.campaigns[0])}`);
 }
 
-const accounts = await request<{ accounts: { ofc: string; userId: string; password: string }[] }>("/api/admin/ofc-accounts", {}, admin.cookie);
-const targetAccount = accounts.data.accounts.find((account) => account.ofc !== "김수진1") ?? accounts.data.accounts[0];
-if (!targetAccount) throw new Error("No OFC account generated");
-
-const ofc = await login(targetAccount.userId, targetAccount.password);
+const ofc = await login("OFC-A", "OFC-A");
 const dashboard = await request<{
   dataset: {
     stores: { ofc?: string; storeId: string }[];
     storeMetrics: { storeId: string }[];
     permissions: { canUpload: boolean; canViewValidation: boolean; canViewAllStores: boolean };
-    userScope: { role: string; ofc?: string };
     issues?: unknown[];
     dailyMetrics?: unknown[];
     categoryMetrics?: unknown[];
@@ -91,34 +158,29 @@ const dashboard = await request<{
   };
 }>("/api/dashboard/latest", {}, ofc.cookie);
 
-const dataset = dashboard.data.dataset;
+const payload = dashboard.data.dataset;
 const forbiddenKeys = ["dailyMetrics", "categoryMetrics", "productMetrics", "focusMetrics"].filter((key) =>
-  Object.prototype.hasOwnProperty.call(dataset, key),
+  Object.prototype.hasOwnProperty.call(payload, key),
 );
-const foreignStores = dataset.stores.filter((store) => store.ofc !== targetAccount.ofc);
+const foreignStores = payload.stores.filter((store) => store.ofc !== "OFC-A");
 if (forbiddenKeys.length) throw new Error(`OFC response leaked raw facts: ${forbiddenKeys.join(", ")}`);
-if (dataset.issues) throw new Error("OFC response leaked validation issues");
-if (dataset.permissions.canUpload || dataset.permissions.canViewValidation || dataset.permissions.canViewAllStores) {
+if (payload.issues) throw new Error("OFC response leaked validation issues");
+if (payload.permissions.canUpload || payload.permissions.canViewValidation || payload.permissions.canViewAllStores) {
   throw new Error("OFC permissions are too broad");
 }
 if (foreignStores.length) throw new Error(`OFC response includes foreign stores: ${foreignStores.length}`);
 
 console.log(JSON.stringify({
-  adminUpload: {
-    accountCount: upload.data.accountCount,
-    generatedAccounts: upload.data.generatedAccounts.length,
-    firstRevision: upload.data.campaign.activeRevisionNumber,
-    secondRevision: secondUpload.data.campaign.activeRevisionNumber,
-    campaignCountAfterReupload: campaignList.data.campaigns.length,
-    leakedRawFactsToAdminDashboard: ["dailyMetrics", "categoryMetrics", "productMetrics", "focusMetrics"].filter((key) =>
-      Object.prototype.hasOwnProperty.call(upload.data.dataset, key),
-    ),
+  adminLocalSync: {
+    firstRevision: firstSync.data.campaign.activeRevisionNumber,
+    secondRevision: secondSync.data.campaign.activeRevisionNumber,
+    campaignCountAfterResync: campaignList.data.campaigns.length,
+    invalidTokenStatus: invalidTokenResponse.status,
+    replayTokenStatus: replayResponse.status,
   },
   ofcScope: {
-    ofc: targetAccount.ofc,
-    storeCount: dataset.stores.length,
-    metricCount: dataset.storeMetrics.length,
-    permissions: dataset.permissions,
+    storeCount: payload.stores.length,
+    metricCount: payload.storeMetrics.length,
     forbiddenKeys,
     foreignStoreCount: foreignStores.length,
   },
