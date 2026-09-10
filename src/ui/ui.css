@@ -18,6 +18,12 @@
   grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
 }
 
+.app-shell[data-collapsed="true"] .sidebar {
+  width: var(--sidebar-w-collapsed);
+  min-width: var(--sidebar-w-collapsed);
+  max-width: var(--sidebar-w-collapsed);
+}
+
 .app-main {
   min-width: 0;
   height: 100vh;
@@ -29,7 +35,7 @@
   min-width: 0;
   padding: var(--content-pad);
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
 }
 
 /* ------------------------------ Sidebar -------------------------------- */
@@ -38,7 +44,9 @@
   color: var(--sidebar-fg);
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  max-width: var(--sidebar-w);
   height: 100vh;
   overflow: hidden;
 }
@@ -71,6 +79,7 @@
 .sidebar-nav {
   flex: 1 1 auto;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--s-3) var(--s-2);
   display: flex;
   flex-direction: column;
@@ -84,6 +93,9 @@
   color: var(--sidebar-section);
   padding: var(--s-4) var(--s-2) var(--s-1);
   text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-link {
@@ -111,6 +123,8 @@
 }
 
 .sidebar-link span {
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -143,6 +157,7 @@
   padding: var(--s-3) var(--s-2);
   display: grid;
   gap: var(--s-2);
+  overflow: hidden;
 }
 
 .sidebar-user {
@@ -181,6 +196,9 @@
 .sidebar-user .who span {
   font-size: var(--fs-xs);
   color: var(--sidebar-section);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-foot button {
@@ -197,6 +215,14 @@
   font-size: var(--fs-sm);
   cursor: pointer;
   transition: background var(--dur) var(--ease);
+  min-width: 0;
+}
+
+.sidebar-foot button span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-foot button:hover {

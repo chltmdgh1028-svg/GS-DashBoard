@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as XLSX from "xlsx";
+import { defaultCampaignConfig } from "../src/config/defaultConfig.js";
 
 const centralUrl = process.env.TEST_BASE_URL || "http://127.0.0.1:8095";
 const agentUrl = process.env.TEST_AGENT_URL || "http://127.0.0.1:8788";
-const downloads = "C:/Users/Administrator/Downloads";
+const sourceDir = process.env.TEST_SOURCE_DIR || "C:/Users/Administrator/Downloads";
 const inputDir = path.resolve(process.env.TEST_AGENT_INPUT_DIR || "outputs/local-agent-input-test/full");
 const missingDir = path.resolve(process.env.TEST_AGENT_MISSING_DIR || "outputs/local-agent-input-test/missing");
 const sourceNames = [
@@ -33,7 +34,7 @@ async function login() {
   return request<{ user: { role: "admin" } }>(`${centralUrl}/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId: "admin", password: "admin" }),
+    body: JSON.stringify({ userId: "admin", password: "fresh1652" }),
   });
 }
 
@@ -42,10 +43,10 @@ async function prepareFolders() {
   await fs.mkdir(inputDir, { recursive: true });
   await fs.mkdir(missingDir, { recursive: true });
   for (const name of sourceNames) {
-    await fs.copyFile(path.join(downloads, name), path.join(inputDir, name));
+    await fs.copyFile(path.join(sourceDir, name), path.join(inputDir, name));
   }
   for (const name of sourceNames.slice(0, -1)) {
-    await fs.copyFile(path.join(downloads, name), path.join(missingDir, name));
+    await fs.copyFile(path.join(sourceDir, name), path.join(missingDir, name));
   }
 }
 
@@ -58,7 +59,7 @@ async function setFolder(folderPath: string) {
 }
 
 async function createModifiedOperatingDaysCopy() {
-  const sourcePath = path.join(downloads, sourceNames[2]);
+  const sourcePath = path.join(sourceDir, sourceNames[2]);
   const outputPath = path.join(inputDir, "1.영업일수 내용변경.xlsx");
   const workbook = XLSX.read(await fs.readFile(sourcePath), { cellDates: true, cellFormula: true });
   const sheetName = workbook.SheetNames[0];
@@ -101,6 +102,11 @@ if (scan.data.files.some((file) => file.found && !file.hash)) throw new Error("A
 
 const admin = await login();
 async function syncOnce() {
+  const status = await request<{ hasActiveRevision: boolean }>(`${centralUrl}/api/admin/campaigns/sync-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ campaignId: defaultCampaignConfig.campaignId }),
+  }, admin.cookie);
   const token = await request<{ token: string }>(`${centralUrl}/api/admin/local-sync-token`, { method: "POST" }, admin.cookie);
   const snapshot = await request<{
     status: "COMPLETED" | "UNCHANGED";
@@ -111,7 +117,7 @@ async function syncOnce() {
   }>(`${agentUrl}/snapshot`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: centralUrl },
-    body: JSON.stringify({ token: token.data.token }),
+    body: JSON.stringify({ token: token.data.token, force: !status.data.hasActiveRevision }),
   });
 
   if (snapshot.data.status === "UNCHANGED") return { data: snapshot.data };
@@ -143,7 +149,7 @@ const firstSync = await syncOnce();
 if (firstSync.data.status !== "COMPLETED" || !firstSync.data.central) throw new Error("First Agent sync did not complete");
 const unchangedScan = await request<{ changedSinceLastSync: boolean }>(`${agentUrl}/files`, { headers: { Origin: centralUrl } });
 if (unchangedScan.data.changedSinceLastSync) throw new Error("Agent still reports changes immediately after first sync");
-await fs.copyFile(path.join(downloads, sourceNames[2]), path.join(inputDir, "1.영업일수 파일명변경.xlsx"));
+await fs.copyFile(path.join(sourceDir, sourceNames[2]), path.join(inputDir, "1.영업일수 파일명변경.xlsx"));
 await fs.utimes(path.join(inputDir, "1.영업일수 파일명변경.xlsx"), new Date(), new Date());
 const sameContentScan = await request<{ changedSinceLastSync: boolean }>(`${agentUrl}/files`, { headers: { Origin: centralUrl } });
 if (sameContentScan.data.changedSinceLastSync) throw new Error("Same content with newer name/mtime should remain unchanged");

@@ -44,6 +44,7 @@ interface SyncBody {
   centralUrl?: string;
   token?: string;
   config?: CampaignConfig;
+  force?: boolean;
 }
 
 interface SnapshotPackage {
@@ -54,13 +55,13 @@ interface SnapshotPackage {
 }
 
 interface AgentConfig {
-  folderPath: string;
+  folderPath?: string;
   lastSyncAt?: string;
   lastSyncFiles?: Record<string, { name: string; modifiedAt: string; hash: string }>;
 }
 
 function defaultAgentConfig(): AgentConfig {
-  return { folderPath: path.resolve(defaultInputDir) };
+  return { folderPath: process.env.LOCAL_INPUT_DIR ? path.resolve(defaultInputDir) : "" };
 }
 
 async function readAgentConfig(): Promise<AgentConfig> {
@@ -69,7 +70,7 @@ async function readAgentConfig(): Promise<AgentConfig> {
     return {
       ...defaultAgentConfig(),
       ...config,
-      folderPath: path.resolve(config.folderPath || defaultInputDir),
+      folderPath: config.folderPath ? path.resolve(config.folderPath) : "",
     };
   } catch {
     return defaultAgentConfig();
@@ -78,7 +79,7 @@ async function readAgentConfig(): Promise<AgentConfig> {
 
 async function writeAgentConfig(config: AgentConfig) {
   await fs.mkdir(configDir, { recursive: true });
-  await fs.writeFile(configPath, JSON.stringify({ ...config, folderPath: path.resolve(config.folderPath) }, null, 2));
+  await fs.writeFile(configPath, JSON.stringify({ ...config, folderPath: config.folderPath ? path.resolve(config.folderPath) : "" }, null, 2));
 }
 
 function arrayBufferFromBuffer(buffer: Buffer) {
@@ -109,7 +110,21 @@ async function folderExists(folderPath: string) {
 
 async function scanFolder(inputFolder?: string) {
   const agentConfig = await readAgentConfig();
-  const folderPath = path.resolve(inputFolder || agentConfig.folderPath);
+  const folderPath = inputFolder || agentConfig.folderPath ? path.resolve(inputFolder || agentConfig.folderPath || "") : "";
+  const folderConfigured = Boolean(folderPath);
+  if (!folderConfigured) {
+    return {
+      folderPath,
+      folderConfigured,
+      connected: false,
+      files: buildStatuses(new Map(), agentConfig),
+      missingRoles: requiredCampaignFileRoles,
+      selectedFiles: [],
+      selectedByRole: {},
+      changedSinceLastSync: Boolean(agentConfig.lastSyncFiles),
+      rejected: [],
+    };
+  }
   const connected = await folderExists(folderPath);
   const selected = new Map<FileRole, ScanCandidate>();
   const rejected: { name: string; role: FileRole | "error"; reason?: string; modifiedAt?: string }[] = [];
@@ -117,6 +132,7 @@ async function scanFolder(inputFolder?: string) {
   if (!connected) {
     return {
       folderPath,
+      folderConfigured,
       connected,
       files: buildStatuses(selected, agentConfig),
       missingRoles: requiredCampaignFileRoles,
@@ -165,7 +181,7 @@ async function scanFolder(inputFolder?: string) {
     const file = selected.get(role);
     return file ? [file] : [];
   });
-  return { folderPath, connected, files: buildStatuses(selected, agentConfig), missingRoles, selectedFiles, selectedByRole, changedSinceLastSync, rejected };
+  return { folderPath, folderConfigured, connected, files: buildStatuses(selected, agentConfig), missingRoles, selectedFiles, selectedByRole, changedSinceLastSync, rejected };
 }
 
 function buildStatuses(selected: Map<FileRole, ScanCandidate>, agentConfig: AgentConfig) {
@@ -192,7 +208,8 @@ async function openFolderPicker(initialFolder: string) {
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::UTF8",
     "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
     "$dialog.Description = 'GS Dashboard 데이터 폴더 선택'",
-    "$dialog.SelectedPath = $env:AGENT_INITIAL_FOLDER",
+    "$initial = $env:AGENT_INITIAL_FOLDER",
+    "if (![string]::IsNullOrWhiteSpace($initial) -and [System.IO.Directory]::Exists($initial)) { $dialog.SelectedPath = $initial }",
     "$result = $dialog.ShowDialog()",
     "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }",
   ].join("; ");
@@ -289,7 +306,7 @@ function logCentralFailure(context: {
   return detail;
 }
 
-async function createSnapshotPackage(config?: CampaignConfig): Promise<
+async function createSnapshotPackage(config?: CampaignConfig, options: { force?: boolean } = {}): Promise<
   | ({ status: "COMPLETED" } & SnapshotPackage)
   | { status: "UNCHANGED"; scan: Awaited<ReturnType<typeof scanFolder>>; message: string }
   | { status: "FAILED"; scan: Awaited<ReturnType<typeof scanFolder>>; error: string }
@@ -299,7 +316,7 @@ async function createSnapshotPackage(config?: CampaignConfig): Promise<
   if (scan.missingRoles.length) {
     return { status: "FAILED", error: "필수 Excel 파일이 누락되어 Campaign 반영을 중단했습니다.", scan };
   }
-  if (!scan.changedSinceLastSync) {
+  if (!scan.changedSinceLastSync && !options.force) {
     return { status: "UNCHANGED", scan, message: "마지막 반영 이후 변경된 파일이 없습니다." };
   }
 
@@ -349,11 +366,13 @@ app.use((req, res, next) => {
 
 app.get("/health", async (_req, res) => {
   const agentConfig = await readAgentConfig();
+  const folderPath = agentConfig.folderPath || "";
   res.json({
     ok: true,
     agentVersion,
-    folderPath: agentConfig.folderPath,
-    folderConnected: await folderExists(agentConfig.folderPath),
+    folderPath,
+    folderConfigured: Boolean(folderPath),
+    folderConnected: folderPath ? await folderExists(folderPath) : false,
     lastSyncAt: agentConfig.lastSyncAt,
     centralServer: defaultCentralServer,
     allowedOrigins: [...allowedOrigins],
@@ -364,7 +383,7 @@ app.get("/health", async (_req, res) => {
 app.get("/config", async (_req, res) => {
   const agentConfig = await readAgentConfig();
   res.json({
-    folderPath: agentConfig.folderPath,
+    folderPath: agentConfig.folderPath || "",
     lastSyncAt: agentConfig.lastSyncAt,
   });
 });
@@ -372,7 +391,11 @@ app.get("/config", async (_req, res) => {
 app.post("/config", async (req, res) => {
   const folderPath = typeof req.body?.folderPath === "string" ? req.body.folderPath.trim() : "";
   if (!folderPath) return res.status(400).json({ error: "폴더 경로를 입력하세요." });
-  const nextConfig = { ...(await readAgentConfig()), folderPath: path.resolve(folderPath) };
+  const resolved = path.resolve(folderPath);
+  if (!(await folderExists(resolved))) {
+    return res.status(400).json({ error: "입력한 경로가 존재하는 폴더가 아닙니다." });
+  }
+  const nextConfig = { ...(await readAgentConfig()), folderPath: resolved };
   await writeAgentConfig(nextConfig);
   res.json({
     folderPath: nextConfig.folderPath,
@@ -383,17 +406,29 @@ app.post("/config", async (req, res) => {
 
 app.post("/select-folder", async (_req, res) => {
   const currentConfig = await readAgentConfig();
-  const selected = await openFolderPicker(currentConfig.folderPath);
-  if (!selected.supported) return res.status(501).json({ error: "Windows 폴더 선택 UI는 Windows Agent에서만 지원합니다." });
-  if (!selected.selectedPath) return res.json({ canceled: true, folderPath: currentConfig.folderPath });
-  const nextConfig = { ...currentConfig, folderPath: path.resolve(selected.selectedPath) };
-  await writeAgentConfig(nextConfig);
-  res.json({
-    canceled: false,
-    folderPath: nextConfig.folderPath,
-    folderConnected: await folderExists(nextConfig.folderPath),
-    lastSyncAt: nextConfig.lastSyncAt,
-  });
+  try {
+    const selected = await openFolderPicker(currentConfig.folderPath || "");
+    if (!selected.supported) return res.status(501).json({ error: "Windows 폴더 선택 UI는 Windows Agent에서만 지원합니다. 경로 직접 입력을 사용하세요." });
+    if (!selected.selectedPath) return res.json({ canceled: true, folderPath: currentConfig.folderPath || "" });
+    const resolved = path.resolve(selected.selectedPath);
+    if (!(await folderExists(resolved))) return res.status(400).json({ error: "선택한 경로가 존재하는 폴더가 아닙니다." });
+    const nextConfig = { ...currentConfig, folderPath: resolved };
+    await writeAgentConfig(nextConfig);
+    res.json({
+      canceled: false,
+      folderPath: nextConfig.folderPath,
+      folderConnected: await folderExists(nextConfig.folderPath),
+      lastSyncAt: nextConfig.lastSyncAt,
+    });
+  } catch (error) {
+    const detail = safeErrorDetail(error);
+    console.error("Windows 폴더 선택 실패 상세:");
+    console.error(JSON.stringify(detail, null, 2));
+    res.status(500).json({
+      error: "Windows 폴더 선택창을 열지 못했습니다. 경로 직접 입력을 사용하세요.",
+      detail,
+    });
+  }
 });
 
 app.get("/files", async (req, res) => {
@@ -406,7 +441,7 @@ app.post("/snapshot", async (req, res) => {
   if (!body.token) return res.status(401).json({ status: "FAILED", error: "Sync Token이 없습니다." });
 
   try {
-    const snapshot = await createSnapshotPackage(body.config);
+    const snapshot = await createSnapshotPackage(body.config, { force: body.force });
     if (snapshot.status === "FAILED") return res.status(400).json(snapshot);
     res.json(snapshot);
   } catch (error) {
@@ -443,7 +478,7 @@ app.post("/sync", async (req, res) => {
   if (!body.token) return res.status(401).json({ status: "FAILED", error: "Sync Token이 없습니다." });
 
   try {
-    const snapshot = await createSnapshotPackage(body.config);
+    const snapshot = await createSnapshotPackage(body.config, { force: body.force });
     if (snapshot.status === "FAILED") return res.status(400).json(snapshot);
     if (snapshot.status === "UNCHANGED") return res.json(snapshot);
 

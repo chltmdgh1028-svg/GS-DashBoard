@@ -161,7 +161,6 @@
 
 @media (max-width: 1180px) {
   :root {
-    --sidebar-w: 60px;
     --content-pad: 14px;
   }
 }

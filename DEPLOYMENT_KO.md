@@ -19,7 +19,7 @@ Node.js 20 이상이 설치된 사내 서버에서 중앙 웹 서버를 실행�
 ```powershell
 npm install
 $env:ADMIN_ID="admin"
-$env:ADMIN_PASSWORD="admin"
+$env:ADMIN_PASSWORD="fresh1652"
 $env:DATA_DIR="D:\GS-DashBoard\data"
 $env:PORT="8080"
 npm start
@@ -69,4 +69,4 @@ ADMIN 화면의 `[폴더 선택]` 버튼은 Local Agent를 통해 Windows 폴더
 
 ## 계정
 
-테스트 기본 ADMIN 계정은 `admin / admin`입니다. ADMIN이 Campaign을 반영하면 조직도 기준 OFC 목록으로 OFC 계정이 자동 생성됩니다. 테스트 기본 OFC 계정은 `본인이름 / 본인이름`입니다.
+테스트 기본 ADMIN 계정은 `admin / fresh1652`입니다. ADMIN이 Campaign을 반영하면 조직도 기준 OFC 목록으로 OFC 계정이 자동 생성됩니다. 테스트 기본 OFC 계정은 `OFC명 / 부문명`입니다. 예: `강혜림 / 1부문`.

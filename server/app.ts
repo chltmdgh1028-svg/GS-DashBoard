@@ -35,7 +35,7 @@ interface AppDb {
 }
 
 const adminId = process.env.ADMIN_ID || "admin";
-const adminPassword = process.env.ADMIN_PASSWORD || "admin";
+const adminPassword = process.env.ADMIN_PASSWORD || "fresh1652";
 const syncTokenSecret = process.env.SYNC_TOKEN_SECRET || `${adminId}:${adminPassword}`;
 const sessionSecret = process.env.SESSION_SECRET || syncTokenSecret;
 const sessionTtlMs = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
@@ -272,9 +272,15 @@ function saveCampaign(dataset: CampaignDataset) {
   const existing = new Map(db.ofcAccounts.map((account) => [account.ofc, account]));
   const generatedAccounts: OfcAccount[] = [];
 
+  const ofcBusinessUnit = new Map<string, string>();
+  for (const store of dataset.stores) {
+    if (store.ofc && store.businessUnit && !ofcBusinessUnit.has(store.ofc)) {
+      ofcBusinessUnit.set(store.ofc, store.businessUnit);
+    }
+  }
   const ofcs = [...new Set(dataset.stores.map((store) => store.ofc).filter((ofc): ofc is string => Boolean(ofc)))].sort((a, b) => a.localeCompare(b, "ko"));
   for (const ofc of ofcs) {
-    const account = { ofc, userId: ofc, password: ofc };
+    const account = { ofc, userId: ofc, password: ofcBusinessUnit.get(ofc) || ofc };
     if (!existing.has(ofc)) generatedAccounts.push(account);
     existing.set(ofc, account);
   }
@@ -390,6 +396,19 @@ export function createApp() {
       token,
       expiresAt: new Date(Date.now() + syncTokenTtlMs).toISOString(),
       agentUrl: process.env.LOCAL_AGENT_URL || "http://127.0.0.1:8787",
+    });
+  });
+
+  app.post("/api/admin/campaigns/sync-status", requireUser, requireAdmin, (req, res) => {
+    const campaignId = typeof req.body?.campaignId === "string" ? req.body.campaignId.trim() : "";
+    if (!campaignId) return res.status(400).json({ error: "Campaign ID가 없습니다." });
+    const campaign = readDb().campaigns.find((item) => item.id === campaignId);
+    const active = campaign ? activeRevision(campaign) : undefined;
+    res.json({
+      campaignId,
+      hasActiveRevision: Boolean(campaign && active?.dataset),
+      activeRevisionNumber: active?.revisionNumber,
+      revisionCount: campaign?.revisions.length ?? 0,
     });
   });
 

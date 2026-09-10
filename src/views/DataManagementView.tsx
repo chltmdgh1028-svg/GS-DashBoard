@@ -37,6 +37,7 @@ interface AgentHealth {
   ok: boolean;
   agentVersion?: string;
   folderPath: string;
+  folderConfigured?: boolean;
   folderConnected: boolean;
   lastSyncAt?: string;
   centralServer?: string;
@@ -173,7 +174,12 @@ export function DataManagementView({
       }
       await checkAgent();
     } catch (error) {
-      toast({ tone: "danger", title: "폴더 선택 실패", description: error instanceof Error ? error.message : "" });
+      setShowAdvanced(true);
+      toast({
+        tone: "danger",
+        title: "폴더 선택 실패",
+        description: error instanceof Error ? `${error.message} 경로 직접 입력을 사용하세요.` : "경로 직접 입력을 사용하세요.",
+      });
     } finally {
       setWorking(false);
     }
@@ -204,13 +210,18 @@ export function DataManagementView({
     setConfirmOpen(false);
     setPublishing(true);
     try {
+      const centralStatus = await api<{ hasActiveRevision: boolean }>("/api/admin/campaigns/sync-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: config.campaignId }),
+      });
       const tokenResult = await api<{ token: string }>("/api/admin/local-sync-token", { method: "POST" });
       let snapshotResult: AgentSnapshotResult;
       try {
         snapshotResult = await agentApi<AgentSnapshotResult>("/snapshot", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: tokenResult.token, config }),
+          body: JSON.stringify({ token: tokenResult.token, config, force: !centralStatus.hasActiveRevision }),
         });
       } catch (error) {
         console.error("Local Agent Snapshot generation failed", error);
@@ -221,7 +232,7 @@ export function DataManagementView({
         toast({
           tone: "info",
           title: "현재 반영된 자료와 동일합니다",
-          description: "변경된 파일이 없어 새 Revision을 만들지 않았습니다.",
+          description: "파일 hash와 중앙 Active Revision이 모두 동일해 새 Revision을 만들지 않았습니다.",
         });
         await checkAgent();
         return;
@@ -271,10 +282,13 @@ export function DataManagementView({
   }
 
   const online = Boolean(health?.ok);
-  const folderConnected = Boolean(health?.folderConnected && scan?.connected);
+  const folderConfigured = Boolean(health?.folderConfigured || health?.folderPath);
+  const folderConnected = Boolean(folderConfigured && health?.folderConnected && scan?.connected);
   const missingRoles = scan?.missingRoles ?? [];
   const filesReady = folderConnected && missingRoles.length === 0;
-  const unchanged = filesReady && scan?.changedSinceLastSync === false;
+  const centralActiveRevisionExists = Boolean(campaign?.id === config.campaignId && campaign.activeRevisionId);
+  const restoreNeeded = filesReady && scan?.changedSinceLastSync === false && !centralActiveRevisionExists;
+  const unchanged = filesReady && scan?.changedSinceLastSync === false && centralActiveRevisionExists;
   const canPublish = filesReady && !unchanged;
 
   const issues = dataset?.issues ?? [];
@@ -287,7 +301,9 @@ export function DataManagementView({
       description: !online
         ? "Local Agent가 실행되어야 폴더를 읽을 수 있습니다."
         : !folderConnected
-          ? "연결 폴더를 선택하세요."
+          ? folderConfigured
+            ? "설정된 폴더에 접근할 수 없습니다."
+            : "연결 폴더가 설정되지 않았습니다."
           : missingRoles.length > 0
             ? `필수 자료 ${formatNumber(missingRoles.length)}종이 없습니다.`
             : `필수 ${formatNumber(requiredCampaignFileRoles.length)}종을 모두 확인했습니다.`,
@@ -322,6 +338,8 @@ export function DataManagementView({
       state: unchanged ? "done" : canPublish ? "active" : "todo",
       description: unchanged
         ? "현재 반영된 자료와 동일합니다. 새 Revision은 만들어지지 않습니다."
+        : restoreNeeded
+          ? "파일은 동일하지만 중앙 Campaign이 없어 R1으로 다시 반영합니다."
         : canPublish
           ? "변경된 파일을 새 Revision으로 반영합니다."
           : "필수 자료를 모두 확인해야 반영할 수 있습니다.",
@@ -396,6 +414,8 @@ export function DataManagementView({
                 `폴더 연결됨 · ${scan?.folderPath}`
               ) : checking ? (
                 "폴더의 파일을 확인하는 중입니다…"
+              ) : !folderConfigured ? (
+                "연결 폴더가 설정되지 않았습니다. [폴더 선택]으로 Excel 폴더를 지정하세요."
               ) : (
                 "Agent는 실행 중이지만 설정된 폴더에 접근할 수 없습니다. 폴더를 다시 선택하세요."
               )
@@ -433,6 +453,11 @@ export function DataManagementView({
         >
           <div className="stack" data-gap="sm">
             <div className="path">{scan?.folderPath ?? health?.folderPath ?? "-"}</div>
+            {online && !folderConfigured && (
+              <Notice tone="info" icon={<IconInfo size={15} aria-hidden />} title="연결 폴더가 설정되지 않았습니다">
+                <span>[폴더 선택]으로 실제 Excel 폴더를 지정하거나, 폴더 선택창이 열리지 않으면 고급 설정에서 경로를 직접 입력하세요.</span>
+              </Notice>
+            )}
             {scan && !scan.connected && (
               <Notice tone="warning" icon={<IconWarning size={15} aria-hidden />} title="폴더에 접근할 수 없습니다">
                 <span>경로가 이동·삭제되었거나 권한이 없습니다. [폴더 선택]으로 다시 지정하세요.</span>

@@ -41,8 +41,8 @@ dist-agent\README.txt
 
 ## 테스트 계정
 
-- ADMIN: `admin / admin`
-- OFC: Campaign 반영 후 조직도 기준 `본인이름 / 본인이름`
+- ADMIN: `admin / fresh1652`
+- OFC: Campaign 반영 후 조직도 기준 `OFC명 / 부문명` 예: `강혜림 / 1부문`
 
 ## 보안 메모
 

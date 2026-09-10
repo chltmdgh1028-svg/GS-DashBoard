@@ -97,7 +97,7 @@ function buildDataset(): CampaignDataset {
   };
 }
 
-const admin = await login("admin", "admin");
+const admin = await login("admin", "fresh1652");
 const dataset = buildDataset();
 
 async function issueSyncToken() {
@@ -160,7 +160,7 @@ if (campaignList.data.campaigns[0].revisionCount !== 2 || campaignList.data.camp
   throw new Error(`Revision tracking failed: ${JSON.stringify(campaignList.data.campaigns[0])}`);
 }
 
-const ofc = await login("OFC-A", "OFC-A");
+const ofc = await login("OFC-A", "1부문");
 const dashboard = await request<{
   dataset: {
     stores: { ofc?: string; storeId: string }[];
