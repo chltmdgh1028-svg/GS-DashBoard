@@ -15,6 +15,7 @@ dist-agent/agent-bundle.cjs
 
 # Runtime data and generated artifacts
 data/
+.devdata/
 outputs/
 analysis/
 DATA_DIR/

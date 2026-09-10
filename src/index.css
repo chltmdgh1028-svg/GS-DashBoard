@@ -1,32 +1,78 @@
 @import "pretendard/dist/web/variable/pretendardvariable.css";
+@import "./ui/tokens.css";
+@import "./ui/ui.css";
 
-:root {
-  font-family: "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
-  color: #102033;
-  background: #f3f6fa;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 900px;
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background: var(--bg-app);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-body {
+h1,
+h2,
+h3,
+p,
+figure {
   margin: 0;
-  min-width: 1024px;
 }
 
 button,
 input,
 select,
 textarea {
+  font-family: inherit;
   letter-spacing: 0;
 }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--c-primary-100);
+}
+
+/* Scrollbars: thin and neutral so dense tables stay readable. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-neutral-300) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--c-neutral-300);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--c-neutral-400);
+  background-clip: content-box;
 }

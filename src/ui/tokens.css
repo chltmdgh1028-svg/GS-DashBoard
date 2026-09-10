@@ -1,0 +1,173 @@
+/* =========================================================================
+   GS Dashboard · Design Tokens
+   Single source of truth for color / spacing / radius / shadow / type.
+   Screens must not hardcode raw hex values - always reference a token.
+   ========================================================================= */
+
+:root {
+  /* ---------- Palette: Neutral ---------- */
+  --c-neutral-0: #ffffff;
+  --c-neutral-25: #fbfcfe;
+  --c-neutral-50: #f4f6fa;
+  --c-neutral-100: #edf1f6;
+  --c-neutral-200: #e2e8f0;
+  --c-neutral-300: #cbd5e1;
+  --c-neutral-400: #94a3b8;
+  --c-neutral-500: #64748b;
+  --c-neutral-600: #4a5a6f;
+  --c-neutral-700: #334155;
+  --c-neutral-800: #1e293b;
+  --c-neutral-900: #0f1e30;
+
+  /* ---------- Palette: Primary (corporate blue) ---------- */
+  --c-primary-50: #eef4fb;
+  --c-primary-100: #dae8f6;
+  --c-primary-200: #bcd4ee;
+  --c-primary-400: #4f8bcc;
+  --c-primary-500: #2a6fbb;
+  --c-primary-600: #1c5aa6;
+  --c-primary-700: #164a8a;
+  --c-primary-800: #123c70;
+
+  /* ---------- Palette: Status (used sparingly) ---------- */
+  --c-success-700: #0b6845;
+  --c-success-600: #0f7b52;
+  --c-success-200: #bfe0d0;
+  --c-success-50: #e9f6f0;
+
+  --c-warning-700: #8f5c05;
+  --c-warning-600: #a76a06;
+  --c-warning-200: #f0dcae;
+  --c-warning-50: #fdf5e6;
+
+  --c-danger-700: #97231c;
+  --c-danger-600: #b3261e;
+  --c-danger-200: #f4c8c4;
+  --c-danger-50: #fdeceb;
+
+  --c-info-600: #1c5aa6;
+  --c-info-200: #bcd4ee;
+  --c-info-50: #eef4fb;
+
+  /* ---------- Semantic roles ---------- */
+  --bg-app: var(--c-neutral-50);
+  --bg-surface: var(--c-neutral-0);
+  --bg-surface-alt: var(--c-neutral-25);
+  --bg-subtle: var(--c-neutral-100);
+  --bg-hover: #f0f5fb;
+  --bg-selected: var(--c-primary-50);
+  --bg-scrim: rgba(15, 30, 48, 0.42);
+
+  --border: var(--c-neutral-200);
+  --border-strong: var(--c-neutral-300);
+  --border-accent: var(--c-primary-200);
+
+  --text: var(--c-neutral-900);
+  --text-secondary: var(--c-neutral-600);
+  --text-muted: var(--c-neutral-500);
+  --text-inverse: var(--c-neutral-0);
+  --text-accent: var(--c-primary-600);
+
+  --accent: var(--c-primary-600);
+  --accent-hover: var(--c-primary-700);
+  --accent-active: var(--c-primary-800);
+  --accent-soft: var(--c-primary-50);
+  --accent-soft-hover: var(--c-primary-100);
+
+  --pos: var(--c-success-600);
+  --neg: var(--c-danger-600);
+  --flat: var(--c-neutral-500);
+
+  /* Chart series (fixed meaning across every screen) */
+  --series-current: #1c5aa6;
+  --series-previous: #94a3b8;
+  --series-cost: #0f8f7f;
+  --series-grid: #e7edf4;
+
+  /* ---------- Sidebar ---------- */
+  --sidebar-bg: #10243c;
+  --sidebar-fg: #b9c9dc;
+  --sidebar-fg-strong: #ffffff;
+  --sidebar-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-active: rgba(86, 152, 214, 0.24);
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-section: #7d94ae;
+
+  /* ---------- Radius ---------- */
+  --r-xs: 3px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+  --r-pill: 999px;
+
+  /* ---------- Elevation ---------- */
+  --sh-xs: 0 1px 2px rgba(15, 30, 48, 0.05);
+  --sh-sm: 0 1px 3px rgba(15, 30, 48, 0.07), 0 1px 2px rgba(15, 30, 48, 0.04);
+  --sh-md: 0 6px 16px rgba(15, 30, 48, 0.09);
+  --sh-lg: 0 16px 40px rgba(15, 30, 48, 0.18);
+
+  /* ---------- Spacing ---------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+
+  /* ---------- Typography ---------- */
+  --font: "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 22px;
+  --fs-3xl: 26px;
+  --fw-regular: 450;
+  --fw-medium: 560;
+  --fw-semibold: 640;
+  --fw-bold: 720;
+  --lh-tight: 1.2;
+  --lh-normal: 1.45;
+
+  /* ---------- Layout ---------- */
+  --sidebar-w: 216px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 50px;
+  --content-pad: 20px;
+  --control-h: 32px;
+  --control-h-lg: 38px;
+  --row-h: 34px;
+
+  /* ---------- Motion / focus ---------- */
+  --dur: 120ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --focus-ring: 0 0 0 2px var(--bg-surface), 0 0 0 4px rgba(28, 90, 166, 0.45);
+}
+
+/* Laptop-first density: 1366x768 and 1440x900 get tighter chrome. */
+@media (max-width: 1500px) {
+  :root {
+    --sidebar-w: 200px;
+    --content-pad: 16px;
+    --fs-2xl: 21px;
+  }
+}
+
+@media (max-width: 1180px) {
+  :root {
+    --sidebar-w: 60px;
+    --content-pad: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur: 0ms;
+  }
+}
