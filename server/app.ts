@@ -42,6 +42,9 @@ const dataDir = process.env.DATA_DIR || defaultDataDir;
 const dbPath = path.join(dataDir, "app-db.json");
 const sessions = new Map<string, AuthenticatedUser>();
 const usedSyncTokens = new Map<string, number>();
+// Request body encodings the API accepts. gzip is what the Local Agent uses for
+// Snapshot uploads; identity keeps every other client and manual call working.
+const supportedRequestEncodings = new Set(["identity", "gzip", "deflate"]);
 
 function emptyDb(): AppDb {
   return { campaigns: [], ofcAccounts: [] };
@@ -284,7 +287,28 @@ function campaignMetaFromRecord(campaign: StoredCampaign) {
 
 export function createApp() {
   const app = express();
-  app.use(express.json({ limit: "120mb" }));
+
+  // Snapshot uploads arrive gzip-compressed (Content-Type: application/json with
+  // Content-Encoding: gzip) because the hosted deployment caps a request body at
+  // 4.5MB and a Campaign Snapshot is ~22MB of JSON. inflate:true decodes gzip and
+  // deflate back to the original bytes before any route sees them, so the parsed
+  // payload is identical either way and an uncompressed client still works.
+  // The limit applies to the decoded body.
+  app.use((req, res, next) => {
+    const declared = String(req.headers["content-encoding"] ?? "")
+      .toLowerCase()
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const unsupported = declared.filter((encoding) => !supportedRequestEncodings.has(encoding));
+    if (unsupported.length) {
+      return res.status(415).json({
+        error: `지원하지 않는 Content-Encoding입니다 (${unsupported.join(", ")}). gzip 또는 비압축으로 보내세요.`,
+      });
+    }
+    next();
+  });
+  app.use(express.json({ limit: "120mb", inflate: true }));
 
   app.post("/api/login", (req, res) => {
     const { userId, password } = req.body || {};
@@ -370,6 +394,23 @@ export function createApp() {
 
   app.get("/api/admin/ofc-accounts", requireUser, requireAdmin, (_req, res) => {
     res.json({ accounts: readDb().ofcAccounts });
+  });
+
+  // Body decoding failures (corrupt gzip, malformed JSON, oversized payload) are
+  // rejected before any route runs. Answer them as JSON so the Local Agent can
+  // show the reason instead of the framework's HTML error page.
+  app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(error);
+    const failure = error as { type?: string; status?: number; statusCode?: number };
+    const status = failure.status ?? failure.statusCode ?? 500;
+    if (status < 400 || status >= 500) return next(error);
+    if (failure.type === "entity.too.large") {
+      return res.status(413).json({ error: "Snapshot 용량이 서버 허용치를 초과했습니다." });
+    }
+    if (failure.type === "encoding.unsupported") {
+      return res.status(415).json({ error: "지원하지 않는 Content-Encoding입니다. gzip 또는 비압축으로 보내세요." });
+    }
+    return res.status(400).json({ error: "요청 본문을 읽지 못했습니다. 압축 또는 JSON 형식을 확인하세요." });
   });
 
   return app;

@@ -12,6 +12,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test:api": "tsx scripts/test-api-routing.ts",
+    "test:gzip": "tsx scripts/test-gzip-sync.ts",
     "preview": "vite preview"
   },
   "dependencies": {

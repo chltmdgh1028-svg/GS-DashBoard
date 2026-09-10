@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -326,14 +327,32 @@ app.post("/sync", async (req, res) => {
 
     const files = await Promise.all(scan.selectedFiles.map((file) => inputFileFromPath(file.filePath)));
     const dataset = await parseCampaignFiles(files, mergeConfig(body.config));
+    // The Snapshot is ~22MB of JSON, well over the 4.5MB request body limit of
+    // the hosted deployment, so it goes out gzip-compressed. The payload itself
+    // is unchanged - only the transport encoding differs, and the server inflates
+    // it back to exactly the same bytes before any Snapshot logic runs.
+    const rawPayload = Buffer.from(JSON.stringify({ token: body.token, dataset }), "utf8");
+    const compressedPayload = zlib.gzipSync(rawPayload, { level: 9 });
+    console.log(
+      `Snapshot 전송: ${(rawPayload.byteLength / 1048576).toFixed(2)}MB -> gzip ${(compressedPayload.byteLength / 1048576).toFixed(2)}MB`,
+    );
+
     const centralResponse = await fetch(`${body.centralUrl}/api/admin/campaigns/local-sync`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: body.token, dataset }),
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip",
+      },
+      body: compressedPayload,
     });
     const central = (await centralResponse.json().catch(() => ({}))) as { error?: string };
     if (!centralResponse.ok) {
-      return res.status(centralResponse.status).json({ status: "FAILED", error: central.error || "중앙 서버 반영 실패", scan });
+      const reason =
+        central.error ||
+        (centralResponse.status === 413
+          ? `중앙 서버가 요청 크기를 거부했습니다 (gzip ${(compressedPayload.byteLength / 1048576).toFixed(2)}MB).`
+          : `중앙 서버 반영 실패 (HTTP ${centralResponse.status})`);
+      return res.status(centralResponse.status).json({ status: "FAILED", error: reason, scan });
     }
 
     const nextConfig = await readAgentConfig();
