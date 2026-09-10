@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-agent/agent-bundle.cjs
 *.local
 
 # Runtime data and generated artifacts

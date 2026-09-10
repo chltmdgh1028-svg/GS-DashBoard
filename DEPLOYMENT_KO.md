@@ -43,6 +43,14 @@ $env:AGENT_PORT="8787"
 npm run agent
 ```
 
+테스트 배포용 Windows 실행파일은 아래 명령으로 생성합니다.
+
+```powershell
+npm run package:agent
+```
+
+생성 파일은 `dist-agent\GS-Dashboard-Agent.exe`입니다. 관리자 PC에서는 Node.js/npm 없이 이 파일을 더블클릭해 실행할 수 있습니다.
+
 ADMIN 화면의 `[폴더 선택]` 버튼은 Local Agent를 통해 Windows 폴더 선택 창을 열고 선택 경로를 PC별 Agent 설정으로 저장합니다. 직접 경로를 입력해 저장할 수도 있습니다. 저장 위치는 기본적으로 `%LOCALAPPDATA%\GS-Dashboard-Agent\config.json`입니다.
 
 ## 파일 선택 규칙

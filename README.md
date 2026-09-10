@@ -25,6 +25,19 @@ npm run agent
 
 기본 Agent 주소는 `http://127.0.0.1:8787`입니다. 기본 입력 폴더는 `C:\GS-Dashboard\Input`입니다. ADMIN 화면의 `[폴더 선택]` 버튼은 Local Agent를 통해 Windows 폴더 선택 창을 열고, 선택 경로를 해당 PC의 Agent 설정에 저장합니다.
 
+Windows 실행파일은 아래 명령으로 생성합니다.
+
+```powershell
+npm run package:agent
+```
+
+산출물:
+
+```text
+dist-agent\GS-Dashboard-Agent.exe
+dist-agent\README.txt
+```
+
 ## 테스트 계정
 
 - ADMIN: `admin / admin`

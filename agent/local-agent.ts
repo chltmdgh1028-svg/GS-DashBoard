@@ -225,6 +225,24 @@ function validateCentralUrl(centralUrl: string | undefined, origin: string | und
   }
 }
 
+async function showWindowsMessage(title: string, message: string) {
+  if (process.platform !== "win32" || process.env.AGENT_NO_MESSAGE_BOX === "1") return;
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    `[System.Windows.Forms.MessageBox]::Show('${message.replace(/'/g, "''")}', '${title.replace(/'/g, "''")}') | Out-Null`,
+  ].join("; ");
+  await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script], { windowsHide: false }).catch(() => undefined);
+}
+
+async function existingAgentHealth() {
+  try {
+    const response = await fetch(`http://${host}:${port}/health`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 const app = express();
 app.use(express.json({ limit: "160mb" }));
 app.use((req, res, next) => {
@@ -331,7 +349,35 @@ app.post("/sync", async (req, res) => {
   }
 });
 
-app.listen(port, host, () => {
-  console.log(`GS Dashboard Local Agent ${agentVersion} running at http://${host}:${port}`);
-  void readAgentConfig().then((config) => console.log(`Input folder: ${config.folderPath}`));
-});
+async function startAgent() {
+  if (await existingAgentHealth()) {
+    const message = `GS Dashboard Local Agent가 이미 실행 중입니다.\n주소: http://${host}:${port}`;
+    console.log(message);
+    await showWindowsMessage("GS Dashboard Agent", message);
+    return;
+  }
+
+  const server = app.listen(port, host, () => {
+    console.log("========================================");
+    console.log(`GS Dashboard Local Agent ${agentVersion}`);
+    console.log(`상태: 실행 중`);
+    console.log(`주소: http://${host}:${port}`);
+    console.log(`종료: 이 창에서 Ctrl+C 또는 창 닫기`);
+    console.log("========================================");
+    void readAgentConfig().then((config) => console.log(`연결 폴더: ${config.folderPath}`));
+  });
+
+  server.on("error", async (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      const message = `GS Dashboard Local Agent가 이미 실행 중이거나 ${port} 포트를 사용 중입니다.`;
+      console.log(message);
+      await showWindowsMessage("GS Dashboard Agent", message);
+      process.exitCode = 0;
+      return;
+    }
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+void startAgent();
