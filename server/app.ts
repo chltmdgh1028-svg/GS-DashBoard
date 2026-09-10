@@ -37,6 +37,8 @@ interface AppDb {
 const adminId = process.env.ADMIN_ID || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "admin";
 const syncTokenSecret = process.env.SYNC_TOKEN_SECRET || `${adminId}:${adminPassword}`;
+const sessionSecret = process.env.SESSION_SECRET || syncTokenSecret;
+const sessionTtlMs = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const syncTokenTtlMs = Number(process.env.SYNC_TOKEN_TTL_MS || 5 * 60 * 1000);
 const defaultDataDir = process.env.VERCEL ? path.join(os.tmpdir(), "gs-dashboard-data") : path.join(process.cwd(), "data");
 const dataDir = process.env.DATA_DIR || defaultDataDir;
@@ -129,13 +131,42 @@ function parseCookies(header = "") {
   );
 }
 
+function base64UrlJson(value: unknown) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function signPayload(payload: string, secret: string) {
+  return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+function issueSessionCookie(user: AuthenticatedUser) {
+  const now = Date.now();
+  const payload = base64UrlJson({ user, iat: now, exp: now + sessionTtlMs });
+  return `${payload}.${signPayload(payload, sessionSecret)}`;
+}
+
+function verifySessionCookie(value: string | undefined) {
+  if (!value?.includes(".")) return undefined;
+  const [payload, signature] = value.split(".");
+  const expected = signPayload(payload, sessionSecret);
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { user?: AuthenticatedUser; exp?: number };
+    if (!parsed.user || !parsed.exp || parsed.exp <= Date.now()) return undefined;
+    return parsed.user;
+  } catch {
+    return undefined;
+  }
+}
+
 function sessionFromRequest(req: express.Request) {
   const sid = parseCookies(req.headers.cookie).sid;
-  return sid ? sessions.get(sid) : undefined;
+  if (!sid) return undefined;
+  return sessions.get(sid) || verifySessionCookie(sid);
 }
 
 function setSession(res: express.Response, user: AuthenticatedUser) {
-  const sid = crypto.randomBytes(24).toString("hex");
+  const sid = issueSessionCookie(user);
   sessions.set(sid, user);
   res.cookie("sid", sid, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
 }
@@ -173,12 +204,8 @@ function pruneUsedSyncTokens(now = Date.now()) {
   }
 }
 
-function base64UrlJson(value: unknown) {
-  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-}
-
 function signSyncPayload(payload: string) {
-  return crypto.createHmac("sha256", syncTokenSecret).update(payload).digest("base64url");
+  return signPayload(payload, syncTokenSecret);
 }
 
 function issueSyncToken(user: AuthenticatedUser) {
