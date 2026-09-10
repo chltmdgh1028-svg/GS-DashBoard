@@ -274,3 +274,43 @@ export function storeScopeLabel(store?: Store) {
 export function ofcsForTeam(dataset: DashboardDataset, team?: string) {
   return dataset.aggregates.ofcs.filter((row) => !team || row.team === team);
 }
+
+/* ------------------------------------------------------- drill-down scope */
+
+export type ScopeLevel = "national" | "businessUnit" | "team" | "ofc" | "store";
+
+export interface Scope {
+  businessUnit?: string;
+  team?: string;
+  ofc?: string;
+  storeId?: string;
+}
+
+export function scopeLevel(scope: Scope): ScopeLevel {
+  if (scope.storeId) return "store";
+  if (scope.ofc) return "ofc";
+  if (scope.team) return "team";
+  if (scope.businessUnit) return "businessUnit";
+  return "national";
+}
+
+/**
+ * Which business unit a team belongs to, taken from the stores themselves so
+ * the mapping does not depend on the team name's text prefix.
+ */
+export function businessUnitByTeam(dataset: DashboardDataset) {
+  const map = new Map<string, string>();
+  for (const store of dataset.stores) {
+    if (store.team && store.businessUnit && !map.has(store.team)) map.set(store.team, store.businessUnit);
+  }
+  return map;
+}
+
+/** Teams directly under a business unit - the comparison set for that level. */
+export function teamsForBusinessUnit(dataset: DashboardDataset, businessUnit?: string) {
+  if (!businessUnit) return dataset.aggregates.teams;
+  const byTeam = businessUnitByTeam(dataset);
+  return dataset.aggregates.teams.filter(
+    (team) => (team.businessUnit ?? byTeam.get(team.label)) === businessUnit,
+  );
+}

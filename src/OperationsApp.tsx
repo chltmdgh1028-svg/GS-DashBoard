@@ -12,13 +12,14 @@ import {
   IconSettings,
   IconStore,
 } from "./ui/icons";
+import type { ScopeLevel } from "./view-models/dashboard";
 import { buildComparisonIndex } from "./view-models/dashboard";
 import { formatDateTimeFull, formatRelativeTime } from "./view-models/format";
 import { CampaignView } from "./views/CampaignView";
 import { DataManagementView } from "./views/DataManagementView";
 import { FocusView } from "./views/FocusView";
 import { LoginView } from "./views/LoginView";
-import { NationalView } from "./views/NationalView";
+import { OverviewView } from "./views/OverviewView";
 import { OfcView } from "./views/OfcView";
 import { SettingsView } from "./views/SettingsView";
 import { StoreView } from "./views/StoreView";
@@ -44,6 +45,7 @@ function Shell() {
   const [dataset, setDataset] = useState<DashboardDataset>();
   const [campaigns, setCampaigns] = useState<CampaignListItem[]>([]);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "1");
+  const [selectedBusinessUnit, setSelectedBusinessUnit] = useState<string>();
   const [selectedTeam, setSelectedTeam] = useState<string>();
   const [selectedOFC, setSelectedOFC] = useState<string>();
   const [selectedStoreId, setSelectedStoreId] = useState<string>();
@@ -98,9 +100,39 @@ function Shell() {
     [campaigns, dataset?.config.campaignId],
   );
 
+  /**
+   * The single drill-down navigator: 전국 → 부문 → 영업팀 → OFC → 점포.
+   * Moving up a level clears the levels below it so the breadcrumb and the
+   * comparison table can never disagree about where you are.
+   */
+  function goToLevel(level: ScopeLevel, value?: string) {
+    if (level === "national") {
+      setSelectedBusinessUnit(undefined);
+      setView("national");
+      return;
+    }
+    if (level === "businessUnit") {
+      if (value) setSelectedBusinessUnit(value);
+      setView("national");
+      return;
+    }
+    if (level === "team") {
+      if (value) setSelectedTeam(value);
+      setView("team");
+      return;
+    }
+    if (level === "ofc") {
+      if (value) setSelectedOFC(value);
+      setView("ofc");
+      return;
+    }
+    setView("store");
+  }
+
   async function handleLogin(nextUser: AuthenticatedUser) {
     setUser(nextUser);
     setView(defaultViewFor(nextUser.role));
+    setSelectedBusinessUnit(undefined);
     setSelectedTeam(undefined);
     setSelectedOFC(nextUser.role === "ofc" ? nextUser.ofc : undefined);
     setSelectedStoreId(undefined);
@@ -112,6 +144,7 @@ function Shell() {
     setUser(null);
     setDataset(undefined);
     setCampaigns([]);
+    setSelectedBusinessUnit(undefined);
     setSelectedTeam(undefined);
     setSelectedOFC(undefined);
     setSelectedStoreId(undefined);
@@ -122,6 +155,7 @@ function Shell() {
     try {
       const result = await api<{ dataset: DashboardDataset }>(`/api/dashboard/${encodeURIComponent(id)}`);
       setDataset(result.dataset);
+      setSelectedBusinessUnit(undefined);
       setSelectedTeam(result.dataset.aggregates.teams[0]?.label);
       setSelectedOFC(result.dataset.aggregates.ofcs[0]?.label);
       setSelectedStoreId(result.dataset.stores[0]?.storeId);
@@ -136,6 +170,7 @@ function Shell() {
   async function handleSyncComplete(next: DashboardDataset) {
     setDataset(next);
     if (next.adminConfig) setConfig(next.adminConfig);
+    setSelectedBusinessUnit(undefined);
     setSelectedTeam(next.aggregates.teams[0]?.label);
     setSelectedOFC(next.aggregates.ofcs[0]?.label);
     setSelectedStoreId(next.stores[0]?.storeId);
@@ -182,7 +217,10 @@ function Shell() {
                   className="sidebar-link"
                   aria-current={currentView === item.id ? "page" : undefined}
                   title={collapsed ? item.label : undefined}
-                  onClick={() => setView(item.id)}
+                  onClick={() => {
+                    if (item.id === "national") setSelectedBusinessUnit(undefined);
+                    setView(item.id);
+                  }}
                 >
                   <item.icon size={16} aria-hidden />
                   <span>{item.label}</span>
@@ -271,11 +309,14 @@ function Shell() {
           )}
 
           {dataset && comparisonIndex && currentView === "national" && (
-            <NationalView
+            <OverviewView
               dataset={dataset}
               campaign={activeCampaign}
               index={comparisonIndex}
-              onOpenTeam={(team) => {
+              scope={{ businessUnit: selectedBusinessUnit }}
+              onNavigate={goToLevel}
+              onSelectBusinessUnit={(businessUnit) => setSelectedBusinessUnit(businessUnit)}
+              onSelectTeam={(team) => {
                 setSelectedTeam(team);
                 setView("team");
               }}
@@ -289,6 +330,7 @@ function Shell() {
               index={comparisonIndex}
               selectedTeam={selectedTeam}
               onTeamChange={setSelectedTeam}
+              onNavigate={goToLevel}
               onOpenOfc={(team, ofc) => {
                 setSelectedTeam(team);
                 setSelectedOFC(ofc);
@@ -308,6 +350,7 @@ function Shell() {
               index={comparisonIndex}
               selectedTeam={selectedTeam}
               selectedOFC={selectedOFC ?? user.ofc}
+              onNavigate={goToLevel}
               onScopeChange={(team, ofc) => {
                 if (team) setSelectedTeam(team);
                 setSelectedOFC(ofc);
@@ -325,6 +368,7 @@ function Shell() {
               campaign={activeCampaign}
               selectedStoreId={selectedStoreId}
               onSelectStore={setSelectedStoreId}
+              onNavigate={goToLevel}
             />
           )}
 

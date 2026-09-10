@@ -1908,3 +1908,61 @@ table.data tfoot td {
     --table-max-h: 46vh;
   }
 }
+
+/* ------------------------------ Scope bar ------------------------------ */
+.crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--r-sm);
+  padding: 3px 6px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  max-width: 220px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.crumb span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.crumb:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.crumb[aria-current="page"] {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  background: var(--accent-soft);
+}
+
+.crumb:disabled {
+  cursor: default;
+  color: var(--c-neutral-400);
+}
+
+.crumb-sep {
+  color: var(--c-neutral-300);
+  flex: 0 0 auto;
+  display: inline-flex;
+}

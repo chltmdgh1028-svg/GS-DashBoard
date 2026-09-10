@@ -4,9 +4,9 @@ import { Badge, DataTable, Delta, EmptyState, KpiCard, KpiRow, PageHeader, Secti
 import type { Column } from "../ui";
 import { IconOfc, IconTeam } from "../ui/icons";
 import { formatNumber, formatPercent, formatSignedPercent, formatWonThousand } from "../view-models/format";
-import type { ComparisonIndex, StoreRow } from "../view-models/dashboard";
-import { buildStoreRows, previousDeltaFor, previousTotalFor } from "../view-models/dashboard";
-import { CampaignMeta, moneyHeader } from "./shared";
+import type { ComparisonIndex, ScopeLevel, StoreRow } from "../view-models/dashboard";
+import { buildStoreRows, previousDeltaFor, previousTotalFor, teamsForBusinessUnit } from "../view-models/dashboard";
+import { CampaignMeta, ScopeBar, moneyHeader } from "./shared";
 
 function ofcColumns(index: ComparisonIndex, attentionByOfc: Map<string, number>): Column<AggregateMetric>[] {
   return [
@@ -38,9 +38,12 @@ function ofcColumns(index: ComparisonIndex, attentionByOfc: Map<string, number>)
         const count = attentionByOfc.get(row.label) ?? 0;
         if (!count) return <span className="muted">-</span>;
         return (
-          <Badge tone="warning" size="sm">
-            {formatNumber(count)}점
-          </Badge>
+          <span className="row" data-nowrap="true" style={{ justifyContent: "flex-end" }}>
+            <Badge tone="warning" size="sm">
+              {formatNumber(count)}
+            </Badge>
+            <span className="muted num">/ {formatNumber(row.storeCount)}</span>
+          </span>
         );
       },
     },
@@ -116,6 +119,7 @@ export function TeamView({
   index,
   selectedTeam,
   onTeamChange,
+  onNavigate,
   onOpenOfc,
   onOpenStore,
 }: {
@@ -124,6 +128,7 @@ export function TeamView({
   index: ComparisonIndex;
   selectedTeam?: string;
   onTeamChange: (team: string) => void;
+  onNavigate: (level: ScopeLevel, value?: string) => void;
   onOpenOfc: (team: string, ofc: string) => void;
   onOpenStore: (storeId: string) => void;
 }) {
@@ -168,12 +173,17 @@ export function TeamView({
 
   const delta = previousDeltaFor(index, summary);
   const previous = previousTotalFor(index, summary);
+  // Sibling teams = the other teams inside the same 부문, matching the level
+  // above this one in the drill-down.
+  const siblingTeams = summary.businessUnit
+    ? teamsForBusinessUnit(dataset, summary.businessUnit)
+    : teams;
 
   return (
     <div className="page">
       <PageHeader
         icon={<IconTeam size={20} aria-hidden />}
-        title={canDrill ? "팀 현황" : "소속팀 현황"}
+        title={canDrill ? `${summary.label} 현황` : "소속팀 현황"}
         description={
           canDrill
             ? "팀 회의용 화면입니다. OFC 행을 선택하면 담당 점포 목록으로 이동합니다."
@@ -192,22 +202,31 @@ export function TeamView({
           </>
         }
         actions={
-          canDrill && (
-            <label className="row" data-nowrap="true">
-              <span className="muted">영업팀</span>
-              <Select
-                value={summary.label}
-                onChange={(event) => onTeamChange(event.target.value)}
-                style={{ width: 220 }}
-              >
-                {teams.map((row) => (
-                  <option key={row.key} value={row.label}>
-                    {row.label}
-                  </option>
-                ))}
-              </Select>
-            </label>
-          )
+          <>
+            <ScopeBar
+              level="team"
+              businessUnit={summary.businessUnit}
+              team={summary.label}
+              showBusinessUnit={dataset.aggregates.businessUnits.length > 0}
+              onNavigate={onNavigate}
+            />
+            {canDrill && (
+              <label className="row" data-nowrap="true">
+                <span className="muted">영업팀</span>
+                <Select
+                  value={summary.label}
+                  onChange={(event) => onTeamChange(event.target.value)}
+                  style={{ width: 210 }}
+                >
+                  {siblingTeams.map((row) => (
+                    <option key={row.key} value={row.label}>
+                      {row.label}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            )}
+          </>
         }
       />
 

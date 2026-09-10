@@ -19,8 +19,9 @@ import {
 } from "../ui";
 import { IconFocus, IconInfo, IconStore } from "../ui/icons";
 import { formatNumber, formatPercent, formatSignedPercent, formatWonThousand, safeDiv } from "../view-models/format";
+import type { ScopeLevel } from "../view-models/dashboard";
 import { buildStoreRows, categoryRowsFor, storeScopeLabel } from "../view-models/dashboard";
-import { CampaignMeta, moneyHeader } from "./shared";
+import { CampaignMeta, ScopeBar, moneyHeader } from "./shared";
 
 interface TooltipPayloadItem {
   name?: string;
@@ -48,11 +49,13 @@ export function StoreView({
   campaign,
   selectedStoreId,
   onSelectStore,
+  onNavigate,
 }: {
   dataset: DashboardDataset;
   campaign?: CampaignListItem;
   selectedStoreId?: string;
   onSelectStore: (storeId: string) => void;
+  onNavigate: (level: ScopeLevel, value?: string) => void;
 }) {
   const rows = useMemo(() => buildStoreRows(dataset), [dataset]);
   const row = rows.find((item) => item.store.storeId === selectedStoreId) ?? rows[0];
@@ -117,7 +120,17 @@ export function StoreView({
           </>
         }
         actions={
-          siblings.length > 1 && (
+          <>
+            <ScopeBar
+              level="store"
+              businessUnit={store.businessUnit}
+              team={store.team}
+              ofc={store.ofc}
+              store={store.storeName}
+              showBusinessUnit={dataset.aggregates.businessUnits.length > 0}
+              onNavigate={onNavigate}
+            />
+            {siblings.length > 1 && (
             <label className="row" data-nowrap="true">
               <span className="muted">점포</span>
               <Select
@@ -132,7 +145,8 @@ export function StoreView({
                 ))}
               </Select>
             </label>
-          )
+            )}
+          </>
         }
       />
 

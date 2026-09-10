@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import type { AggregateMetric, CampaignListItem, DashboardDataset } from "../domain/types";
 import { Badge, CampaignBadge, Delta, MetaItem } from "../ui";
-import { IconError, IconOk } from "../ui/icons";
+import { IconChevronRight, IconError, IconOk } from "../ui/icons";
 import { formatDateTimeFull, formatNumber, formatPercent, formatRelativeTime, formatWonThousand } from "../view-models/format";
-import type { ComparisonIndex } from "../view-models/dashboard";
+import type { ComparisonIndex, ScopeLevel } from "../view-models/dashboard";
 import { previousDeltaFor } from "../view-models/dashboard";
 import type { Column } from "../ui";
 
@@ -218,4 +218,71 @@ export function aggregateColumns({
 
 export function LegendRow({ children }: { children: ReactNode }) {
   return <div className="chart-legend">{children}</div>;
+}
+
+/* ------------------------------------------------------------- Scope bar */
+
+/**
+ * Drill-down breadcrumb: 전국 › 부문 › 영업팀 › OFC › 점포.
+ *
+ * Every dashboard screen is one level of the same hierarchy, and the level you
+ * stand on decides what gets compared underneath it. The breadcrumb is how you
+ * go back up; clicking a row in the comparison table is how you go down.
+ * Levels the signed-in user has no data for are not offered.
+ */
+export function ScopeBar({
+  level,
+  businessUnit,
+  team,
+  ofc,
+  store,
+  showBusinessUnit = true,
+  onNavigate,
+}: {
+  level: ScopeLevel;
+  businessUnit?: string;
+  team?: string;
+  ofc?: string;
+  store?: string;
+  showBusinessUnit?: boolean;
+  onNavigate: (level: ScopeLevel, value?: string) => void;
+}) {
+  const crumbs: { level: ScopeLevel; label: string; value?: string; enabled: boolean }[] = [
+    { level: "national", label: "전국", enabled: true },
+  ];
+  if (showBusinessUnit) {
+    crumbs.push({
+      level: "businessUnit",
+      label: businessUnit ?? "부문",
+      value: businessUnit,
+      enabled: Boolean(businessUnit),
+    });
+  }
+  crumbs.push({ level: "team", label: team ?? "영업팀", value: team, enabled: Boolean(team) });
+  crumbs.push({ level: "ofc", label: ofc ?? "OFC", value: ofc, enabled: Boolean(ofc) });
+  crumbs.push({ level: "store", label: store ?? "점포", value: store, enabled: Boolean(store) });
+
+  return (
+    <nav className="crumbs" aria-label="조회 범위">
+      {crumbs.map((crumb, position) => (
+        <span key={crumb.level} className="row" data-nowrap="true" style={{ gap: 0 }}>
+          {position > 0 && (
+            <span className="crumb-sep" aria-hidden>
+              <IconChevronRight size={13} />
+            </span>
+          )}
+          <button
+            type="button"
+            className="crumb"
+            disabled={!crumb.enabled}
+            aria-current={crumb.level === level ? "page" : undefined}
+            onClick={() => onNavigate(crumb.level, crumb.value)}
+            title={crumb.label}
+          >
+            <span>{crumb.label}</span>
+          </button>
+        </span>
+      ))}
+    </nav>
+  );
 }

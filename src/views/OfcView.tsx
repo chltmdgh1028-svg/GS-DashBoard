@@ -19,9 +19,9 @@ import {
 import type { Column } from "../ui";
 import { IconOfc } from "../ui/icons";
 import { formatNumber, formatPercent, formatSignedPercent, formatSignedPoint, formatWonThousand } from "../view-models/format";
-import type { ComparisonIndex, StoreRow } from "../view-models/dashboard";
+import type { ComparisonIndex, ScopeLevel, StoreRow } from "../view-models/dashboard";
 import { buildStoreRows, previousDeltaFor, previousTotalFor, storeRowSummary, storeRowsGroupDelta } from "../view-models/dashboard";
-import { CampaignMeta, moneyHeader } from "./shared";
+import { CampaignMeta, ScopeBar, moneyHeader } from "./shared";
 
 type StatusFilter = "all" | "action" | "watch" | "good" | "nodata";
 
@@ -159,6 +159,7 @@ export function OfcView({
   selectedTeam,
   selectedOFC,
   onScopeChange,
+  onNavigate,
   onOpenStore,
 }: {
   dataset: DashboardDataset;
@@ -167,6 +168,7 @@ export function OfcView({
   selectedTeam?: string;
   selectedOFC?: string;
   onScopeChange: (team: string | undefined, ofc: string) => void;
+  onNavigate: (level: ScopeLevel, value?: string) => void;
   onOpenStore: (storeId: string) => void;
 }) {
   const [status, setStatus] = useState<StatusFilter>("all");
@@ -218,7 +220,7 @@ export function OfcView({
     <div className="page">
       <PageHeader
         icon={<IconOfc size={20} aria-hidden />}
-        title={canDrill ? "OFC 현황" : "내 담당 현황"}
+        title={canDrill ? `${summary.label} 현황` : "내 담당 현황"}
         description="담당 점포 중 먼저 확인할 곳을 고르는 화면입니다. 상태 필터와 정렬로 우선순위를 좁히세요."
         meta={
           <>
@@ -233,7 +235,16 @@ export function OfcView({
           </>
         }
         actions={
-          canDrill && (
+          <>
+            <ScopeBar
+              level="ofc"
+              businessUnit={summary.businessUnit}
+              team={summary.team}
+              ofc={summary.label}
+              showBusinessUnit={dataset.aggregates.businessUnits.length > 0}
+              onNavigate={onNavigate}
+            />
+            {canDrill && (
             <label className="row" data-nowrap="true">
               <span className="muted">OFC</span>
               <Select
@@ -251,7 +262,8 @@ export function OfcView({
                 ))}
               </Select>
             </label>
-          )
+            )}
+          </>
         }
       />
 
