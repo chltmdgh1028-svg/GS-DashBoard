@@ -14,6 +14,7 @@ import { classifyCampaignInputFile, parseCampaignFiles, type CampaignInputFile }
 const agentVersion = "0.2.0";
 const host = process.env.AGENT_HOST || "127.0.0.1";
 const port = Number(process.env.AGENT_PORT || 8787);
+const defaultCentralServer = process.env.CENTRAL_SERVER_URL || "https://gs-dash-board.vercel.app";
 const defaultInputDir = process.env.LOCAL_INPUT_DIR || "C:\\GS-Dashboard\\Input";
 const configDir = process.env.AGENT_CONFIG_DIR || path.join(process.env.LOCALAPPDATA || os.homedir(), "GS-Dashboard-Agent");
 const configPath = path.join(configDir, "config.json");
@@ -43,6 +44,13 @@ interface SyncBody {
   centralUrl?: string;
   token?: string;
   config?: CampaignConfig;
+}
+
+interface SnapshotPackage {
+  scan: Awaited<ReturnType<typeof scanFolder>>;
+  rawSizeBytes: number;
+  gzipSizeBytes: number;
+  gzipBase64: string;
 }
 
 interface AgentConfig {
@@ -226,6 +234,90 @@ function validateCentralUrl(centralUrl: string | undefined, origin: string | und
   }
 }
 
+function safeErrorDetail(error: unknown) {
+  const failure = error as {
+    name?: string;
+    message?: string;
+    cause?: {
+      name?: string;
+      message?: string;
+      code?: string;
+      errno?: number;
+      syscall?: string;
+      hostname?: string;
+      address?: string;
+      port?: number;
+    };
+  };
+  return {
+    name: failure?.name,
+    message: failure?.message,
+    cause: failure?.cause
+      ? {
+          name: failure.cause.name,
+          message: failure.cause.message,
+          code: failure.cause.code,
+          errno: failure.cause.errno,
+          syscall: failure.cause.syscall,
+          hostname: failure.cause.hostname,
+          address: failure.cause.address,
+          port: failure.cause.port,
+        }
+      : undefined,
+  };
+}
+
+function logCentralFailure(context: {
+  url: string;
+  centralOrigin: string;
+  method: string;
+  rawSizeBytes?: number;
+  gzipSizeBytes?: number;
+  error: unknown;
+}) {
+  const detail = {
+    url: context.url,
+    CENTRAL_ORIGIN: [...allowedOrigins].join(","),
+    centralOrigin: context.centralOrigin,
+    method: context.method,
+    rawSizeBytes: context.rawSizeBytes,
+    gzipSizeBytes: context.gzipSizeBytes,
+    error: safeErrorDetail(context.error),
+  };
+  console.error("중앙 서버 요청 실패 상세:");
+  console.error(JSON.stringify(detail, null, 2));
+  return detail;
+}
+
+async function createSnapshotPackage(config?: CampaignConfig): Promise<
+  | ({ status: "COMPLETED" } & SnapshotPackage)
+  | { status: "UNCHANGED"; scan: Awaited<ReturnType<typeof scanFolder>>; message: string }
+  | { status: "FAILED"; scan: Awaited<ReturnType<typeof scanFolder>>; error: string }
+> {
+  const scan = await scanFolder();
+  if (!scan.connected) return { status: "FAILED", error: "로컬 데이터 폴더에 접근할 수 없습니다.", scan };
+  if (scan.missingRoles.length) {
+    return { status: "FAILED", error: "필수 Excel 파일이 누락되어 Campaign 반영을 중단했습니다.", scan };
+  }
+  if (!scan.changedSinceLastSync) {
+    return { status: "UNCHANGED", scan, message: "마지막 반영 이후 변경된 파일이 없습니다." };
+  }
+
+  const files = await Promise.all(scan.selectedFiles.map((file) => inputFileFromPath(file.filePath)));
+  const dataset = await parseCampaignFiles(files, mergeConfig(config));
+  const rawPayload = Buffer.from(JSON.stringify({ dataset }), "utf8");
+  const compressedPayload = zlib.gzipSync(rawPayload, { level: 9 });
+  console.log(`Snapshot 생성: ${(rawPayload.byteLength / 1048576).toFixed(2)}MB -> gzip ${(compressedPayload.byteLength / 1048576).toFixed(2)}MB`);
+
+  return {
+    status: "COMPLETED",
+    scan,
+    rawSizeBytes: rawPayload.byteLength,
+    gzipSizeBytes: compressedPayload.byteLength,
+    gzipBase64: compressedPayload.toString("base64"),
+  };
+}
+
 async function showWindowsMessage(title: string, message: string) {
   if (process.platform !== "win32" || process.env.AGENT_NO_MESSAGE_BOX === "1") return;
   const script = [
@@ -263,6 +355,7 @@ app.get("/health", async (_req, res) => {
     folderPath: agentConfig.folderPath,
     folderConnected: await folderExists(agentConfig.folderPath),
     lastSyncAt: agentConfig.lastSyncAt,
+    centralServer: defaultCentralServer,
     allowedOrigins: [...allowedOrigins],
     allowedOriginPattern: allowedOriginPattern.source,
   });
@@ -308,6 +401,40 @@ app.get("/files", async (req, res) => {
   res.json(scan);
 });
 
+app.post("/snapshot", async (req, res) => {
+  const body = req.body as SyncBody;
+  if (!body.token) return res.status(401).json({ status: "FAILED", error: "Sync Token이 없습니다." });
+
+  try {
+    const snapshot = await createSnapshotPackage(body.config);
+    if (snapshot.status === "FAILED") return res.status(400).json(snapshot);
+    res.json(snapshot);
+  } catch (error) {
+    const detail = safeErrorDetail(error);
+    console.error("Snapshot 생성 실패 상세:");
+    console.error(JSON.stringify(detail, null, 2));
+    res.status(500).json({
+      status: "FAILED",
+      error: error instanceof Error ? error.message : "Local Agent Snapshot 생성 실패",
+      detail,
+    });
+  }
+});
+
+app.post("/sync-complete", async (req, res) => {
+  const selectedByRole = req.body?.selectedByRole;
+  if (!selectedByRole || typeof selectedByRole !== "object") {
+    return res.status(400).json({ error: "반영 완료 파일 정보가 없습니다." });
+  }
+  const nextConfig = await readAgentConfig();
+  await writeAgentConfig({
+    ...nextConfig,
+    lastSyncAt: new Date().toISOString(),
+    lastSyncFiles: selectedByRole,
+  });
+  res.json({ ok: true });
+});
+
 app.post("/sync", async (req, res) => {
   const body = req.body as SyncBody;
   if (!validateCentralUrl(body.centralUrl, req.headers.origin)) {
@@ -316,35 +443,40 @@ app.post("/sync", async (req, res) => {
   if (!body.token) return res.status(401).json({ status: "FAILED", error: "Sync Token이 없습니다." });
 
   try {
-    const scan = await scanFolder();
-    if (!scan.connected) return res.status(400).json({ status: "FAILED", error: "로컬 데이터 폴더에 접근할 수 없습니다.", scan });
-    if (scan.missingRoles.length) {
-      return res.status(400).json({ status: "FAILED", error: "필수 Excel 파일이 누락되어 Campaign 반영을 중단했습니다.", scan });
-    }
-    if (!scan.changedSinceLastSync) {
-      return res.json({ status: "UNCHANGED", scan, message: "마지막 반영 이후 변경된 파일이 없습니다." });
-    }
+    const snapshot = await createSnapshotPackage(body.config);
+    if (snapshot.status === "FAILED") return res.status(400).json(snapshot);
+    if (snapshot.status === "UNCHANGED") return res.json(snapshot);
 
-    const files = await Promise.all(scan.selectedFiles.map((file) => inputFileFromPath(file.filePath)));
-    const dataset = await parseCampaignFiles(files, mergeConfig(body.config));
-    // The Snapshot is ~22MB of JSON, well over the 4.5MB request body limit of
-    // the hosted deployment, so it goes out gzip-compressed. The payload itself
-    // is unchanged - only the transport encoding differs, and the server inflates
-    // it back to exactly the same bytes before any Snapshot logic runs.
-    const rawPayload = Buffer.from(JSON.stringify({ token: body.token, dataset }), "utf8");
+    const uploadUrl = `${body.centralUrl}/api/admin/campaigns/local-sync`;
+    console.log(`Snapshot 전송: ${(snapshot.rawSizeBytes / 1048576).toFixed(2)}MB -> gzip ${(snapshot.gzipSizeBytes / 1048576).toFixed(2)}MB`);
+    const rawPayload = Buffer.from(JSON.stringify({ token: body.token, dataset: JSON.parse(zlib.gunzipSync(Buffer.from(snapshot.gzipBase64, "base64")).toString("utf8")).dataset }), "utf8");
     const compressedPayload = zlib.gzipSync(rawPayload, { level: 9 });
-    console.log(
-      `Snapshot 전송: ${(rawPayload.byteLength / 1048576).toFixed(2)}MB -> gzip ${(compressedPayload.byteLength / 1048576).toFixed(2)}MB`,
-    );
 
-    const centralResponse = await fetch(`${body.centralUrl}/api/admin/campaigns/local-sync`, {
+    let centralResponse: Response;
+    try {
+      centralResponse = await fetch(uploadUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Content-Encoding": "gzip",
       },
       body: compressedPayload,
-    });
+      });
+    } catch (error) {
+      const detail = logCentralFailure({
+        url: uploadUrl,
+        centralOrigin: body.centralUrl ?? "",
+        method: "POST",
+        rawSizeBytes: rawPayload.byteLength,
+        gzipSizeBytes: compressedPayload.byteLength,
+        error,
+      });
+      return res.status(502).json({
+        status: "FAILED",
+        error: "Local Agent가 Dashboard 서버에 연결하지 못했습니다.",
+        detail,
+      });
+    }
     const central = (await centralResponse.json().catch(() => ({}))) as { error?: string };
     if (!centralResponse.ok) {
       const reason =
@@ -352,19 +484,22 @@ app.post("/sync", async (req, res) => {
         (centralResponse.status === 413
           ? `중앙 서버가 요청 크기를 거부했습니다 (gzip ${(compressedPayload.byteLength / 1048576).toFixed(2)}MB).`
           : `중앙 서버 반영 실패 (HTTP ${centralResponse.status})`);
-      return res.status(centralResponse.status).json({ status: "FAILED", error: reason, scan });
+      return res.status(centralResponse.status).json({ status: "FAILED", error: reason, scan: snapshot.scan });
     }
 
     const nextConfig = await readAgentConfig();
     await writeAgentConfig({
       ...nextConfig,
       lastSyncAt: new Date().toISOString(),
-      lastSyncFiles: scan.selectedByRole,
+      lastSyncFiles: snapshot.scan.selectedByRole,
     });
 
-    res.json({ status: "COMPLETED", scan, central });
+    res.json({ status: "COMPLETED", scan: snapshot.scan, central });
   } catch (error) {
-    res.status(500).json({ status: "FAILED", error: error instanceof Error ? error.message : "Local Agent 처리 실패" });
+    const detail = safeErrorDetail(error);
+    console.error("Local Agent 처리 실패 상세:");
+    console.error(JSON.stringify(detail, null, 2));
+    res.status(500).json({ status: "FAILED", error: error instanceof Error ? error.message : "Local Agent 처리 실패", detail });
   }
 });
 
@@ -381,6 +516,7 @@ async function startAgent() {
     console.log(`GS Dashboard Local Agent ${agentVersion}`);
     console.log(`상태: 실행 중`);
     console.log(`주소: http://${host}:${port}`);
+    console.log(`중앙 서버: ${defaultCentralServer}`);
     console.log(`종료: 이 창에서 Ctrl+C 또는 창 닫기`);
     console.log("========================================");
     void readAgentConfig().then((config) => console.log(`연결 폴더: ${config.folderPath}`));

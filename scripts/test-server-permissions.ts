@@ -1,3 +1,4 @@
+import zlib from "node:zlib";
 import { aggregateAll, calculateStoreMetrics } from "../src/aggregations/aggregation.js";
 import { defaultCampaignConfig } from "../src/config/defaultConfig.js";
 import type { CampaignDataset, DailyMetric, FocusStoreMetric, ProductMetric, Store } from "../src/domain/types.js";
@@ -105,32 +106,47 @@ async function issueSyncToken() {
 }
 
 async function syncDataset(tokenValue: string) {
+  const body = zlib.gzipSync(Buffer.from(JSON.stringify({ dataset }), "utf8"));
   return request<{
     campaign: { id: string; activeRevisionNumber?: number; revisionCount?: number };
     generatedAccounts: { ofc: string; userId: string; password: string }[];
     accountCount: number;
     dataset: Record<string, unknown>;
-  }>("/api/admin/campaigns/local-sync", {
+  }>("/api/admin/campaigns/browser-sync", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: tokenValue, dataset }),
-  });
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-GS-Snapshot-Encoding": "gzip",
+      "X-GS-Sync-Token": tokenValue,
+    },
+    body,
+  }, admin.cookie);
 }
 
 const firstToken = await issueSyncToken();
 const firstSync = await syncDataset(firstToken);
 
-const invalidTokenResponse = await fetch(`${baseUrl}/api/admin/campaigns/local-sync`, {
+const invalidTokenResponse = await fetch(`${baseUrl}/api/admin/campaigns/browser-sync`, {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ token: "invalid-token" }),
+  headers: {
+    "Content-Type": "application/octet-stream",
+    "X-GS-Snapshot-Encoding": "gzip",
+    "X-GS-Sync-Token": "invalid-token",
+    Cookie: admin.cookie,
+  },
+  body: zlib.gzipSync(Buffer.from(JSON.stringify({ dataset }), "utf8")),
 });
 if (invalidTokenResponse.status !== 401) throw new Error(`Invalid sync token was not rejected: ${invalidTokenResponse.status}`);
 
-const replayResponse = await fetch(`${baseUrl}/api/admin/campaigns/local-sync`, {
+const replayResponse = await fetch(`${baseUrl}/api/admin/campaigns/browser-sync`, {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ token: firstToken }),
+  headers: {
+    "Content-Type": "application/octet-stream",
+    "X-GS-Snapshot-Encoding": "gzip",
+    "X-GS-Sync-Token": firstToken,
+    Cookie: admin.cookie,
+  },
+  body: zlib.gzipSync(Buffer.from(JSON.stringify({ dataset }), "utf8")),
 });
 if (replayResponse.status !== 401) throw new Error(`Replay sync token was not rejected: ${replayResponse.status}`);
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import express from "express";
 import type { AuthenticatedUser, CampaignConfig, CampaignDataset } from "../src/domain/types.js";
 import { campaignMeta, dashboardForUser } from "../src/server/scope.js";
@@ -215,6 +216,12 @@ function verifySyncToken(token: unknown) {
   return { ok: true, error: "" };
 }
 
+function requireSyncToken(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const verified = verifySyncToken(req.headers["x-gs-sync-token"]);
+  if (!verified.ok) return res.status(401).json({ error: verified.error });
+  next();
+}
+
 function activeRevision(campaign: StoredCampaign) {
   return campaign.revisions.find((revision) => revision.id === campaign.activeRevisionId) ?? campaign.revisions[0];
 }
@@ -358,6 +365,37 @@ export function createApp() {
       agentUrl: process.env.LOCAL_AGENT_URL || "http://127.0.0.1:8787",
     });
   });
+
+  app.post(
+    "/api/admin/campaigns/browser-sync",
+    requireUser,
+    requireAdmin,
+    requireSyncToken,
+    express.raw({ type: "application/octet-stream", limit: "40mb" }),
+    (req, res) => {
+      let dataset: CampaignDataset | undefined;
+      try {
+        const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+        const encoding = String(req.headers["x-gs-snapshot-encoding"] ?? "identity").toLowerCase();
+        const raw = encoding === "gzip" ? zlib.gunzipSync(body) : body;
+        const parsed = JSON.parse(raw.toString("utf8")) as { dataset?: CampaignDataset };
+        dataset = parsed.dataset;
+      } catch {
+        return res.status(400).json({ error: "Snapshot gzip 또는 JSON 형식이 올바르지 않습니다." });
+      }
+
+      if (!dataset?.config || !Array.isArray(dataset.stores) || !Array.isArray(dataset.storeMetrics)) {
+        return res.status(400).json({ error: "Local Agent Snapshot 데이터 형식이 올바르지 않습니다." });
+      }
+      const saved = saveCampaign(dataset);
+      res.json({
+        campaign: campaignMetaFromRecord(saved.campaign),
+        generatedAccounts: saved.generatedAccounts,
+        accountCount: saved.accountCount,
+        dataset: dashboardForUser(saved.revision.dataset, res.locals.user as AuthenticatedUser),
+      });
+    },
+  );
 
   app.post("/api/admin/campaigns/local-sync", (req, res) => {
     const verified = verifySyncToken(req.body?.token);

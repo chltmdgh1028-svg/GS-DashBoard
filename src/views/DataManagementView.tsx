@@ -39,6 +39,7 @@ interface AgentHealth {
   folderPath: string;
   folderConnected: boolean;
   lastSyncAt?: string;
+  centralServer?: string;
 }
 
 interface ScanFile {
@@ -58,6 +59,16 @@ interface AgentScan {
   missingRoles: FileRole[];
   files: ScanFile[];
   rejected?: { name: string; role: FileRole | "error"; reason?: string }[];
+  selectedByRole?: Record<string, { name: string; modifiedAt: string; hash: string }>;
+}
+
+interface AgentSnapshotResult {
+  status: "COMPLETED" | "UNCHANGED";
+  message?: string;
+  scan: AgentScan;
+  rawSizeBytes?: number;
+  gzipSizeBytes?: number;
+  gzipBase64?: string;
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -69,6 +80,20 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 
 const AGENT_URL_KEY = "gs-dashboard.agentUrl";
 const defaultAgentUrl = "http://127.0.0.1:8787";
+
+function base64ToBytes(value: string) {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function formatBytes(bytes?: number) {
+  if (!bytes) return "-";
+  return `${(bytes / 1048576).toFixed(2)}MB`;
+}
 
 export function DataManagementView({
   dataset,
@@ -180,17 +205,19 @@ export function DataManagementView({
     setPublishing(true);
     try {
       const tokenResult = await api<{ token: string }>("/api/admin/local-sync-token", { method: "POST" });
-      const syncResult = await agentApi<{
-        status: "COMPLETED" | "UNCHANGED";
-        message?: string;
-        central?: { dataset: DashboardDataset; generatedAccounts: unknown[]; accountCount: number };
-      }>("/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: tokenResult.token, centralUrl: window.location.origin, config }),
-      });
+      let snapshotResult: AgentSnapshotResult;
+      try {
+        snapshotResult = await agentApi<AgentSnapshotResult>("/snapshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: tokenResult.token, config }),
+        });
+      } catch (error) {
+        console.error("Local Agent Snapshot generation failed", error);
+        throw new Error("Local Agent가 Snapshot을 생성하지 못했습니다.");
+      }
 
-      if (syncResult.status === "UNCHANGED" || !syncResult.central) {
+      if (snapshotResult.status === "UNCHANGED") {
         toast({
           tone: "info",
           title: "현재 반영된 자료와 동일합니다",
@@ -200,13 +227,40 @@ export function DataManagementView({
         return;
       }
 
-      await onSyncComplete(syncResult.central.dataset, syncResult.central.generatedAccounts, syncResult.central.accountCount);
+      if (!snapshotResult.gzipBase64) throw new Error("Local Agent Snapshot payload가 없습니다.");
+      let centralResult: { dataset: DashboardDataset; generatedAccounts: unknown[]; accountCount: number };
+      try {
+        const response = await fetch("/api/admin/campaigns/browser-sync", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-GS-Snapshot-Encoding": "gzip",
+            "X-GS-Sync-Token": tokenResult.token,
+          },
+          body: base64ToBytes(snapshotResult.gzipBase64),
+        });
+        const data = (await response.json().catch(() => ({}))) as typeof centralResult & { error?: string };
+        if (!response.ok) throw new Error(data.error || `Dashboard 서버 반영 실패 (HTTP ${response.status})`);
+        centralResult = data;
+      } catch (error) {
+        console.error("Dashboard browser-mediated sync failed", error);
+        throw new Error("Dashboard 서버에 데이터를 반영하지 못했습니다.");
+      }
+
+      await agentApi("/sync-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectedByRole: snapshotResult.scan.selectedByRole }),
+      }).catch((error) => console.warn("Local Agent sync marker update failed", error));
+
+      await onSyncComplete(centralResult.dataset, centralResult.generatedAccounts, centralResult.accountCount);
       toast({
         tone: "success",
         title: "Campaign에 반영했습니다",
-        description: `신규 OFC 계정 ${formatNumber(syncResult.central.generatedAccounts.length)}개 · 총 계정 ${formatNumber(
-          syncResult.central.accountCount,
-        )}개`,
+        description: `${formatBytes(snapshotResult.rawSizeBytes)} → gzip ${formatBytes(snapshotResult.gzipSizeBytes)} · 신규 OFC 계정 ${formatNumber(
+          centralResult.generatedAccounts.length,
+        )}개 · 총 계정 ${formatNumber(centralResult.accountCount)}개`,
       });
       await checkAgent();
     } catch (error) {
@@ -315,6 +369,12 @@ export function DataManagementView({
               <span className="meta-item">
                 마지막 반영
                 <b title={formatDateTimeFull(health.lastSyncAt)}>{formatRelativeTime(health.lastSyncAt)}</b>
+              </span>
+            )}
+            {health?.centralServer && (
+              <span className="meta-item">
+                중앙 서버
+                <b>{health.centralServer}</b>
               </span>
             )}
           </>

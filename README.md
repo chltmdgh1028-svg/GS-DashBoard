@@ -5,10 +5,11 @@
 ## 구조
 
 - Web/Central Server: 로그인, 권한 Scope, Campaign Revision 저장, Dashboard API 제공
-- Local Agent: 관리자 PC의 지정 폴더를 직접 읽고 기존 Excel Parser/KPI/Validation 로직으로 Snapshot 생성
+- Local Agent: 관리자 PC의 지정 폴더를 직접 읽고 기존 Excel Parser/KPI/Validation 로직으로 gzip Snapshot 생성
+- ADMIN Browser: Local Agent에서 받은 gzip Snapshot을 현재 로그인 세션으로 중앙 same-origin API에 반영
 - OFC: Excel 원시자료와 Local Agent 없이 중앙 Dashboard API만 조회
 
-중앙 서버는 관리자 PC의 로컬 폴더 경로를 저장하지 않습니다. 폴더 경로와 마지막 반영 파일 hash는 각 PC의 Local Agent 설정에만 저장됩니다.
+중앙 서버는 관리자 PC의 로컬 폴더 경로를 저장하지 않습니다. 폴더 경로와 마지막 반영 파일 hash는 각 PC의 Local Agent 설정에만 저장됩니다. 회사 Proxy/TLS 정책과 충돌하지 않도록 Agent가 외부 HTTPS 업로드를 직접 수행하지 않고, ADMIN 브라우저가 이미 로그인한 Dashboard 서버로 Snapshot을 전송합니다.
 
 ## 실행
 
@@ -48,7 +49,7 @@ dist-agent\README.txt
 - 브라우저 Excel 첨부 업로드와 붙여넣기 입력 API는 운영 UI/API에서 제거했습니다.
 - Local Agent는 기본적으로 `127.0.0.1`에만 bind합니다.
 - Local Agent는 허용된 GS Dashboard Origin만 CORS로 허용합니다.
-- Campaign 반영은 중앙 서버가 발급한 단기 one-time Sync Token이 있어야 가능합니다.
+- Campaign 반영은 ADMIN 로그인 세션과 중앙 서버가 발급한 단기 one-time Sync Token이 모두 있어야 가능합니다.
 - 동일 Campaign 재반영은 새 Campaign이 아니라 새 Revision을 만들고 최신 Revision을 Active로 지정합니다.
 - 동일 역할 파일이 여러 개면 Header Signature로 역할을 분류한 뒤 `modifiedAt` 기준 최신 파일을 선택합니다.
 - Revision 생성 여부는 선택된 전체 역할별 파일의 content SHA-256만 비교합니다. 같은 내용의 파일명 또는 수정시각 변경은 `UNCHANGED`로 처리합니다.

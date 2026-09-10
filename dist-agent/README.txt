@@ -9,10 +9,12 @@ GS Dashboard Local Agent
 6. 데이터 검증 후 [Campaign 반영]을 클릭합니다.
 
 기본 Agent 주소: http://127.0.0.1:8787
+기본 중앙 서버: https://gs-dash-board.vercel.app
 설정 저장 위치: %LOCALAPPDATA%\GS-Dashboard-Agent\config.json
 종료 방법: Agent 콘솔창에서 Ctrl+C를 누르거나 창을 닫습니다.
 
 보안
 - 이 실행파일 안에는 회사 Excel, Snapshot, 토큰, 환경변수, 원시데이터가 포함되어 있지 않습니다.
 - Agent는 기본적으로 127.0.0.1에만 bind합니다.
-- 허용된 GS Dashboard Origin과 one-time Sync Token이 있어야 Campaign 반영이 가능합니다.
+- Agent는 로컬 Excel을 읽고 gzip Snapshot 생성까지만 담당합니다.
+- 중앙 반영은 ADMIN 브라우저가 로그인 세션과 one-time Sync Token으로 수행합니다.

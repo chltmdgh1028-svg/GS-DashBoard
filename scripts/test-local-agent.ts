@@ -102,17 +102,41 @@ if (scan.data.files.some((file) => file.found && !file.hash)) throw new Error("A
 const admin = await login();
 async function syncOnce() {
   const token = await request<{ token: string }>(`${centralUrl}/api/admin/local-sync-token`, { method: "POST" }, admin.cookie);
-  return request<{
+  const snapshot = await request<{
     status: "COMPLETED" | "UNCHANGED";
-    central?: {
-      campaign: { revisionCount?: number; activeRevisionNumber?: number };
-      dataset: { stores: unknown[] };
-    };
-  }>(`${agentUrl}/sync`, {
+    scan: { selectedByRole: Record<string, { name: string; modifiedAt: string; hash: string }> };
+    gzipBase64?: string;
+    rawSizeBytes?: number;
+    gzipSizeBytes?: number;
+  }>(`${agentUrl}/snapshot`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: centralUrl },
-    body: JSON.stringify({ centralUrl, token: token.data.token }),
+    body: JSON.stringify({ token: token.data.token }),
   });
+
+  if (snapshot.data.status === "UNCHANGED") return { data: snapshot.data };
+  if (!snapshot.data.gzipBase64) throw new Error("Agent did not return gzip payload");
+
+  const central = await request<{
+    campaign: { revisionCount?: number; activeRevisionNumber?: number };
+    dataset: { stores: unknown[] };
+  }>(`${centralUrl}/api/admin/campaigns/browser-sync`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-GS-Snapshot-Encoding": "gzip",
+      "X-GS-Sync-Token": token.data.token,
+    },
+    body: Buffer.from(snapshot.data.gzipBase64, "base64"),
+  }, admin.cookie);
+
+  await request(`${agentUrl}/sync-complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: centralUrl },
+    body: JSON.stringify({ selectedByRole: snapshot.data.scan.selectedByRole }),
+  });
+
+  return { data: { ...snapshot.data, central: central.data } };
 }
 
 const firstSync = await syncOnce();

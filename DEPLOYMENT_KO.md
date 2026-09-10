@@ -5,11 +5,12 @@
 ## 실행 구조
 
 - ADMIN Web: 중앙 서버 로그인 후 Local Agent 연결, 폴더 자료 확인, Campaign 반영
-- Local Agent: 관리자 PC의 지정 로컬 폴더를 직접 읽고 Excel 분석, Store Alias, KPI 계산, 검증 수행
-- Central Server: Local Agent가 보낸 완성 Snapshot을 Campaign Revision으로 저장
+- Local Agent: 관리자 PC의 지정 로컬 폴더를 직접 읽고 Excel 분석, Store Alias, KPI 계산, 검증 수행, gzip Snapshot 생성
+- ADMIN Browser: Local Agent에서 받은 gzip Snapshot을 현재 로그인 세션으로 중앙 same-origin API에 전송
+- Central Server: ADMIN 세션과 one-time Sync Token을 확인한 뒤 Snapshot을 Campaign Revision으로 저장
 - OFC: 로그인 후 서버가 허용한 Dashboard 데이터만 조회
 
-중앙 Vercel 서버는 관리자 PC의 로컬 폴더에 접근하지 않습니다. 폴더 경로는 각 PC의 Local Agent 설정 파일에만 저장합니다.
+중앙 Vercel 서버는 관리자 PC의 로컬 폴더에 접근하지 않습니다. 폴더 경로는 각 PC의 Local Agent 설정 파일에만 저장합니다. 회사 PC에서 Node standalone HTTPS가 Proxy/TLS 정책과 충돌할 수 있으므로, 중앙 반영 전송은 ADMIN 브라우저가 수행합니다.
 
 ## 사내 서버 실행
 
