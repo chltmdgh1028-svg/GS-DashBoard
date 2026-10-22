@@ -5,23 +5,25 @@
 import type {
   AuthenticatedUser,
   ConsoleHealth,
-  DatasetEntry,
-  GridView,
-  HistoryResult,
-  PreviewResult,
-  SaveResult,
+  InspectionRowsResponse,
+  MovementRecord,
+  QtyConfirmation,
+  QtyCorrection,
+  WriteReceipt,
 } from "./domain/types";
 
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
-  /** Set on a 503: which environment variables are missing. */
+  /** True when the same request may be retried, or the receipt checked. */
+  readonly retryable: boolean;
   readonly missing?: string[];
 
-  constructor(status: number, message: string, code?: string, missing?: string[]) {
+  constructor(status: number, message: string, code?: string, retryable = false, missing?: string[]) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
     this.missing = missing;
   }
 }
@@ -35,12 +37,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const body = await response
       .json()
-      .then((parsed: { error?: string; code?: string; missing?: string[] }) => parsed)
+      .then((parsed: { error?: string; code?: string; retryable?: boolean; missing?: string[] }) => parsed)
       .catch(() => undefined);
     throw new ApiError(
       response.status,
       body?.error ?? `요청이 실패했습니다 (HTTP ${response.status}).`,
       body?.code,
+      body?.retryable === true,
       body?.missing,
     );
   }
@@ -48,12 +51,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function query(params: Record<string, string | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value) search.set(key, value);
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
 export function fetchHealth() {
   return request<ConsoleHealth>("/api/health");
 }
 
 export function fetchSession() {
-  return request<{ user: AuthenticatedUser | null; writesEnabled: boolean }>("/api/session");
+  return request<{
+    user: AuthenticatedUser | null;
+    correctionsEnabled: boolean;
+    adminGridUrl: string | null;
+    inspectionBase: string | null;
+  }>("/api/session");
 }
 
 export function login(userId: string, password: string) {
@@ -67,49 +82,70 @@ export function logout() {
   return request<{ ok: true }>("/api/logout", { method: "POST" });
 }
 
-export function fetchDatasets() {
-  return request<{ datasets: DatasetEntry[] }>("/api/master/datasets");
+export interface RowFilters {
+  jobKey?: string;
+  date?: string;
+  center?: string;
+  filterMode?: string;
+  [key: string]: string | undefined;
 }
 
-export function fetchView(name: string) {
-  return request<{ view: GridView }>(`/api/master/datasets/${encodeURIComponent(name)}`);
+export function fetchRows(filters: RowFilters) {
+  return request<InspectionRowsResponse>(`/api/ops/rows${query(filters)}`);
 }
 
-export function fetchHistory(name: string) {
-  return request<HistoryResult>(`/api/master/datasets/${encodeURIComponent(name)}/history`);
+export function fetchCurrentJob() {
+  return request<Record<string, unknown>>("/api/ops/current-job");
 }
 
-/** The CAS pair every write carries, taken from the view it was based on. */
-export interface GridSubmission {
-  columns: string[];
-  rows: string[][];
-  expectedRevision: number;
-  sourceHash: string;
+export function fetchMovements(filters: RowFilters) {
+  return request<{ ok?: boolean; records?: MovementRecord[]; data?: MovementRecord[] }>(
+    `/api/ops/movements${query(filters)}`,
+  );
 }
 
-/** Validate only; the inspection app reports per-cell errors and writes nothing. */
-export function previewGrid(name: string, submission: GridSubmission) {
-  return request<PreviewResult>(`/api/master/datasets/${encodeURIComponent(name)}/preview`, {
+export function fetchHistory() {
+  return request<{ ok?: boolean; data?: unknown[] }>("/api/ops/history");
+}
+
+export function fetchWriteStatus(operationId: string, kind: string, payloadHash?: string) {
+  return request<WriteReceipt>("/api/ops/write-status", {
     method: "POST",
-    body: JSON.stringify(submission),
+    body: JSON.stringify({ operationId, kind, payloadHash }),
+  });
+}
+
+export function recoverWrite(operationId: string, kind: string, payloadHash?: string, reason?: string) {
+  return request<WriteReceipt>("/api/ops/recover-write", {
+    method: "POST",
+    body: JSON.stringify({ operationId, kind, payloadHash, reason }),
+  });
+}
+
+export function correctQty(correction: QtyCorrection) {
+  return request<{ saved: WriteReceipt }>("/api/ops/correct-qty", {
+    method: "POST",
+    body: JSON.stringify(correction),
   });
 }
 
 /**
- * Commit. Reuse the `operationId` from the preview: the write is idempotent
- * on that id, so a retry confirms the first attempt rather than applying a
- * second one.
+ * Resolve an uncertain correction by reading the canonical row back. This is
+ * the only correct response to a timeout: never resubmit the write.
  */
-export function saveGrid(name: string, submission: GridSubmission, operationId: string) {
-  return request<SaveResult>(`/api/master/datasets/${encodeURIComponent(name)}/save`, {
+export function confirmQty(jobKey: string, productCode: string, requestId: string) {
+  return request<QtyConfirmation>("/api/ops/confirm-qty", {
     method: "POST",
-    body: JSON.stringify({ ...submission, operationId }),
+    body: JSON.stringify({ jobKey, productCode, requestId }),
   });
 }
 
-export function fetchWriteStatus(operationId: string, payloadHash?: string) {
-  return request<SaveResult>("/api/master/write-status", {
-    method: "POST",
-    body: JSON.stringify({ operationId, payloadHash }),
-  });
+/** Photo URL. The signed id is itself the capability, so no header is needed. */
+export function photoUrl(base: string, id: string, size = "w320") {
+  return `${base}/api/photo?id=${encodeURIComponent(id)}&sz=${encodeURIComponent(size)}`;
+}
+
+/** `qty-<timestamp>-<id>`: the app parses the timestamp for write ordering. */
+export function newQtyRequestId() {
+  return `qty-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 }

@@ -11,5 +11,5 @@ app.get(/.*/, (_req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`검품 마스터 콘솔 서버가 http://localhost:${port} 에서 실행 중입니다.`);
+  console.log(`검품 운영 콘솔 서버가 http://localhost:${port} 에서 실행 중입니다.`);
 });

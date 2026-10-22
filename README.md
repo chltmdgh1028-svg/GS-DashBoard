@@ -1,50 +1,51 @@
-# 검품 마스터 콘솔 (Inspection Master Console)
+# 검품 운영 콘솔 (Inspection Operations Console)
 
-검품 운영 기준정보를 조회하고 수정하는 콘솔입니다. 기존 Google Sheet가 들고 있던 탭들을 그대로 다루며,
+검품 앱이 기록한 **실제 운영 데이터**를 조회하고, 필요한 경우 수량을 안전하게 보정하는 콘솔입니다.
 자체 데이터는 보관하지 않습니다.
 
-> **먼저 읽어 주세요.** 이 기능은 `inspection-app-main`에 **이미 존재합니다** (Admin Spreadsheet /
-> admin grid, `api/_lib/app/adminGrid.js`). 이 저장소는 그 API를 호출하는 **두 번째 UI**입니다.
-> 검증 로직을 복제하지 않은 이유는 아래 [설계](#설계) 참고.
+## 화면
 
-## 데이터셋
-
-검품 앱의 `adminGrid.DATASETS`와 같은 8개입니다.
-
-| key | 이름 |
+| 화면 | 내용 |
 | --- | --- |
-| `work_schedule` | 근무표 |
-| `reservation_rows` | 사전예약 |
-| `product_master` | 상품 기준정보 |
-| `partner_category_master` | 파트너 기준정보 |
-| `event_rows` | 행사표 |
-| `mapping_rows` | 협력사 별칭 매핑 |
-| `exclude_rows` | 제외목록 |
-| `inspection_criteria` | 검품 기준 |
+| 검품 내역 | 검품 행 + 발주/검품/불량 수량 + 불량사유 + 사진, 행 상세에서 수량 보정 |
+| 회송 / 교환 | 회송·교환 원본 내역 |
+| 이력 | 검품 앱 이력 아카이브 |
+| 저장 / 복구 상태 | 네이티브 저장 영수증 조회, 복구 요청, 수량 보정 반영 확인 |
+| 기준정보 | 만들지 않았습니다. 검품 앱의 admin grid로 **링크**만 합니다 |
 
 ## 설계
 
-이 콘솔은 **Supabase에 직접 접속하지 않습니다.** 모든 읽기/쓰기는 검품 앱의
-`POST {INSPECTION_APP_BASE}/api/admin-grid`를 거칩니다.
+Supabase와 R2에 직접 접속하지 않습니다. 모든 읽기/쓰기는 검품 앱의 `POST {INSPECTION_APP_BASE}/api/gas`를
+거칩니다. 그 엔드포인트가 이미 식별자 정규화(job base key, canonical partner, record id), 수량 state
+machine과 CAS, 회송/교환 state machine, 네이티브 저장 영수증을 들고 있습니다. 여기서 다시 구현하면 두
+번째 writer가 되고, 한 군데라도 어긋나면 정규 행이 깨집니다.
 
-그 이유는 검증 로직 때문입니다. 검품 앱의 `adminGrid.normalize()`는 정규 데이터를 지키는 규칙을 들고
-있습니다 — `inspection_criteria`의 기존 AI 정량 규칙 보존, 중복 규칙 탐지, `사용여부` TRUE/FALSE 정규화,
-상품코드 정규화, 사전예약 발주수량 검사, 근무표 월 헤더 파싱, `수정자`/`수정일시` 서버 각인. 이걸 여기서
-다시 구현해 `app_grid_decide`를 직접 호출하면, 한 군데라도 다른 순간 마스터 데이터가 조용히 깨집니다.
-그래서 **쓰기 주체는 검품 앱 하나로 유지**합니다.
+서버 간 통신이라 `Origin` 헤더가 없고, 검품 앱의 origin allowlist에 이 콘솔을 넣을 필요가 없습니다. 세션
+토큰은 서버 밖으로 나가지 않습니다. 모든 요청에 `clientPlatform: "service"`와 `caller`를 붙여 최소
+클라이언트 버전 게이트를 통과합니다 (Inspection Dashboard와 같은 방식).
 
-호출은 서버 간 통신입니다. 브라우저는 same-origin `/api/*`만 부르고, 검품 앱 세션 토큰은 서버 밖으로
-나가지 않습니다. `Origin` 헤더가 없으므로 검품 앱의 origin allowlist에 이 콘솔을 추가할 필요도 없습니다.
-요청에는 `clientPlatform: "service"`와 `caller: "inspection-master-console"`를 붙여, 최소 클라이언트
-버전 게이트가 이를 구버전 앱으로 오인하지 않게 합니다 (Inspection Dashboard와 같은 방식).
+사진은 `{INSPECTION_APP_BASE}/api/photo?id=...&sz=w320`에서 직접 불러옵니다. 서명된 id 자체가 capability라
+헤더가 필요 없어서, 함수를 거치지 않고 `<img>`가 바로 받습니다.
 
-## 저장 흐름
+### 사용하는 action
 
-1. **검토** — `previewAdminGrid`. 아무것도 쓰지 않고 셀 단위 오류·경고·변경 건수만 받습니다.
-2. **저장** — `saveAdminGrid`. 검토할 때 쓴 `revision` + `sourceHash`를 그대로 보냅니다.
+`getInspectionRows` · `getCurrentJob` · `getReturnExchangeRecords` · `getHistoryData` · `getPhotoArchive` ·
+`saveInspectionQtyFastBatch` · `confirmInspectionQty` · `getNativeWriteStatus` · `recoverNativeWrite`
 
-그 사이 다른 사람이 수정했다면 `NATIVE_WRITE_CONFLICT`로 거부되고 아무것도 쓰이지 않습니다.
-`operationId`는 멱등 키라서, 응답이 유실돼 재시도해도 두 번 저장되지 않습니다.
+## 안전 보정
+
+수량 보정은 이 콘솔의 유일한 쓰기이고, 의도적으로 좁게 만들었습니다.
+
+1. 화면에서 보고 있던 수량을 `baseQty`로 함께 보냅니다. 그 사이 다른 사람이 고쳤다면 검품 앱의 state
+   machine이 거부합니다 — 조용히 덮어쓰지 않습니다.
+2. `requestId`는 `qty-<timestamp>-<id>` 형식입니다. 검품 앱이 이 prefix에서 쓰기 순서를 읽기 때문에
+   형식이 다르면 순서 보장이 사라집니다. 서버가 형식을 강제합니다.
+3. 수량 0은 빈 값이 아니라 실제 보정이므로 `explicitZero`를 함께 보냅니다.
+4. 저장 후 `confirmInspectionQty`로 **원본 행을 다시 읽어** 이 요청이 반영됐는지 판정합니다.
+
+**응답이 유실되거나 PENDING으로 끝나면 다시 저장하지 않습니다.** 이미 반영됐을 수 있기 때문에, 읽어서
+확인합니다 — 행 확인(`confirmInspectionQty`) 또는 영수증 조회(`getNativeWriteStatus`). 그래도 불확실하면
+`recoverNativeWrite`로 검품 앱에 확정을 요청합니다.
 
 ## 환경 변수
 
@@ -54,11 +55,11 @@
 | `SESSION_SECRET` | 운영에서 필수 | 세션 쿠키 서명 키. 없으면 부팅 시 임의 생성 |
 | `INSPECTION_APP_BASE` | 예 | 검품 앱 origin. 예: `https://inspection-app-main.vercel.app` |
 | `INSPECTION_SESSION_TOKEN` | 예 | 검품 앱이 발급한 세션 토큰. 권한은 검품 앱이 이 토큰으로 판단 |
-| `MASTER_WRITES_ENABLED` | 아니오 | `true`일 때만 수정 가능. 기본은 읽기 전용 |
+| `CORRECTIONS_ENABLED` | 아니오 | `true`일 때만 수량 보정·복구 요청 가능. 기본은 조회 전용 |
 | `ADMIN_ID` | 아니오 | 기본 `admin` |
 | `INSPECTION_TIMEOUT_MS` | 아니오 | 기본 30000 |
 
-연결 변수가 없으면 콘솔은 **데이터를 지어내지 않고 503**으로 응답하고 화면에 누락 변수를 표시합니다.
+연결 변수가 없으면 콘솔은 **데이터를 지어내지 않고 503**으로 응답하고 누락 변수를 화면에 표시합니다.
 
 ## 실행
 
@@ -73,14 +74,15 @@ npm run dev
 npm test
 ```
 
-검품 앱 프로토콜을 흉내 내는 stub을 띄워서 확인합니다. 운영 데이터에 접속하지 않습니다.
-확인 항목: CAS(`revision`+`sourceHash`) 전달, 잘못된 CAS 거부, 데이터셋 allowlist, `operationId` 멱등 전달,
-`nativeWrite` 형식, service caller 표기, 쓰기 게이트, 오류 코드 → HTTP 상태 매핑, 미설정 시 503.
+검품 앱 프로토콜을 흉내 내는 stub으로 돌립니다. **운영 데이터에 접속하지 않습니다.**
+확인 항목: 필터 전달, service caller 표기, 보정 가드(baseQty 누락 / 음수 / 소수 / jobKey 누락 /
+requestId 형식 2종)가 앱에 도달하지 않고 거부되는지, CAS base와 requestId가 변형 없이 전달되는지,
+`explicitZero`, PENDING이 실패로 둔갑하지 않는지, 보정 게이트, 미설정 시 503.
 
 ## 배포
 
-Vercel 프로젝트 `gs-dash-board`를 재사용합니다. Vercel Authentication(SSO)이 `all`로 켜져 있어
-외부에서는 접근할 수 없습니다.
+Vercel 프로젝트 `gs-dash-board`를 재사용합니다. Vercel Authentication(SSO)이 `all`이라 외부에서 접근할 수
+없습니다.
 
 ## 이력
 

@@ -1,30 +1,35 @@
 /**
- * Inspection Master Console - API.
+ * Inspection Operations Console - API.
  *
- * This service stores no inspection data. Every read and every write is a
- * call to the inspection app's admin-grid API, which owns the canonical rows
- * and the validation that protects them. There is no seed and no cache: if
- * the inspection app is unreachable the console says so rather than showing a
- * number from somewhere else.
+ * Every read and write is a call to the inspection app's `/api/gas`. The
+ * console stores nothing and derives nothing: a number on this screen came
+ * from the same handler the field app calls.
  *
- * The write path mirrors the app's own: `previewAdminGrid` validates and
- * reports per-cell errors without writing, then `saveAdminGrid` commits under
- * the `revision` + `sourceHash` the preview was based on. If either moved in
- * the meantime the app answers NATIVE_WRITE_CONFLICT and nothing is written,
- * so a stale tab cannot overwrite someone else's edit.
+ * The correction path is the only write, and it is deliberately narrow:
+ *
+ *   1. the browser corrects a qty on a row it has read
+ *   2. the server sends it with the CAS base (`baseQty`, `baseRevision`) from
+ *      that read, so a row changed in the meantime is rejected by the app's
+ *      state machine instead of silently overwritten
+ *   3. `requestId` is stable per correction, so a retry after a timeout is
+ *      the same request rather than a second one
+ *   4. `confirmInspectionQty` then reads the canonical row back and says
+ *      whether this exact request landed
+ *
+ * Step 4 is what makes it safe to retry: an unknown outcome is resolved by
+ * reading, never by writing again.
  */
 import crypto from "node:crypto";
 import express from "express";
-import type {
-  AuthenticatedUser,
-  GridView,
-  HistoryResult,
-  PreviewResult,
-  SaveResult,
-} from "../src/domain/types.js";
-import { inspectionApiConfig, missingInspectionVars, writesEnabled } from "./config.js";
-import { DATASETS, isKnownDataset } from "./datasets.js";
-import { adminGrid, InspectionApiError, NotConfiguredError } from "./inspectionApi.js";
+import type { AuthenticatedUser } from "../src/domain/types.js";
+import {
+  adminGridUrl,
+  correctionsEnabled,
+  inspectionApiConfig,
+  inspectionBase,
+  missingInspectionVars,
+} from "./config.js";
+import { gas, InspectionApiError, NotConfiguredError } from "./inspectionApi.js";
 
 const adminId = process.env.ADMIN_ID || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "";
@@ -95,10 +100,10 @@ function requireUser(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-function requireWrites(_req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!writesEnabled()) {
+function requireCorrections(_req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!correctionsEnabled()) {
     return res.status(403).json({
-      error: "이 배포는 읽기 전용입니다. 수정하려면 MASTER_WRITES_ENABLED=true 를 설정하세요.",
+      error: "이 배포는 조회 전용입니다. 보정을 허용하려면 CORRECTIONS_ENABLED=true 를 설정하세요.",
     });
   }
   next();
@@ -109,57 +114,20 @@ function sendError(res: express.Response, cause: unknown) {
     return res.status(503).json({ error: cause.message, missing: cause.missing });
   }
   if (cause instanceof InspectionApiError) {
-    return res.status(cause.status).json({ error: cause.message, code: cause.code });
+    return res.status(cause.status).json({ error: cause.message, code: cause.code, retryable: cause.retryable });
   }
   console.error(cause);
   return res.status(500).json({ error: "서버 처리 중 오류가 발생했습니다." });
 }
 
-/** Reject an unknown dataset here so a typo never reaches the inspection app. */
-function datasetParam(req: express.Request, res: express.Response) {
-  const name = String(req.params.name);
-  if (!isKnownDataset(name)) {
-    res.status(404).json({ error: `알 수 없는 데이터셋입니다: ${name}` });
-    return undefined;
-  }
-  return name;
-}
-
-/**
- * The CAS pair every write must carry, taken from the body the browser echoes
- * back from its last view. Both are validated as the app expects them:
- * `revision` must be a non-negative safe integer or `identity()` throws
- * NATIVE_WRITE_INVALID on the far side.
- */
-function casFrom(body: unknown) {
-  const source = (body ?? {}) as { expectedRevision?: unknown; sourceHash?: unknown };
-  const expectedRevision = Number(source.expectedRevision);
-  const sourceHash = String(source.sourceHash ?? "");
-  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-    throw new InspectionApiError("cas", 400, "expectedRevision이 올바르지 않습니다. 화면을 새로 고치세요.");
-  }
-  if (!sourceHash) {
-    throw new InspectionApiError("cas", 400, "sourceHash가 필요합니다. 화면을 새로 고치세요.");
-  }
-  return { expectedRevision, sourceHash };
-}
-
-function gridPayload(body: unknown) {
-  const source = (body ?? {}) as { columns?: unknown; rows?: unknown };
-  if (!Array.isArray(source.columns) || !Array.isArray(source.rows)) {
-    throw new InspectionApiError("grid", 400, "columns와 rows가 필요합니다.");
-  }
-  return { columns: source.columns.map(String), rows: source.rows as string[][] };
-}
+const str = (value: unknown) => String(value ?? "").trim();
 
 /* --------------------------------------------------------------------- App */
 
 export function createApp() {
   const app = express();
 
-  // The inspection app caps a grid save at 3.8MB; accept a little more so an
-  // oversized edit is refused with its own message instead of a parser error.
-  app.use(express.json({ limit: "5mb" }));
+  app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -168,18 +136,18 @@ export function createApp() {
       sessionSecretConfigured,
       inspectionApiConfigured: Boolean(inspectionApiConfig()),
       missingInspectionVars: missingInspectionVars(),
-      writesEnabled: writesEnabled(),
+      correctionsEnabled: correctionsEnabled(),
+      adminGridUrl: adminGridUrl() ?? null,
+      inspectionBase: inspectionBase() ?? null,
     });
   });
 
   app.post("/api/login", (req, res) => {
-    const userId = String(req.body?.userId ?? "").trim();
+    const userId = str(req.body?.userId);
     const password = String(req.body?.password ?? "");
 
     if (!adminPassword) {
-      return res.status(503).json({
-        error: "로그인 자격이 설정되지 않았습니다. 서버에 ADMIN_PASSWORD를 설정하세요.",
-      });
+      return res.status(503).json({ error: "로그인 자격이 설정되지 않았습니다. 서버에 ADMIN_PASSWORD를 설정하세요." });
     }
     if (userId !== adminId || !secretEquals(password, adminPassword)) {
       return res.status(401).json({ error: "아이디 또는 비밀번호가 올바르지 않습니다." });
@@ -200,45 +168,34 @@ export function createApp() {
   });
 
   app.get("/api/session", (req, res) => {
-    res.json({ user: sessionFromRequest(req) ?? null, writesEnabled: writesEnabled() });
+    res.json({
+      user: sessionFromRequest(req) ?? null,
+      correctionsEnabled: correctionsEnabled(),
+      adminGridUrl: adminGridUrl() ?? null,
+      inspectionBase: inspectionBase() ?? null,
+    });
   });
 
-  app.get("/api/master/datasets", requireUser, (_req, res) => {
-    res.json({ datasets: DATASETS });
-  });
+  /* ---------------------------------------------------------------- Reads */
 
-  app.get("/api/master/datasets/:name", requireUser, async (req, res) => {
-    const dataset = datasetParam(req, res);
-    if (!dataset) return;
+  /**
+   * Inspection rows: qty, reason and photo references in one payload.
+   * `includePhotos` is passed through so the row detail does not need a
+   * second round trip per row.
+   */
+  app.get("/api/ops/rows", requireUser, async (req, res) => {
     try {
-      const view = await adminGrid<GridView>({ action: "getAdminGrid", payload: { dataset } });
-      res.json({ view });
-    } catch (cause) {
-      sendError(res, cause);
-    }
-  });
-
-  app.get("/api/master/datasets/:name/history", requireUser, async (req, res) => {
-    const dataset = datasetParam(req, res);
-    if (!dataset) return;
-    try {
-      res.json(await adminGrid<HistoryResult>({ action: "getAdminGridHistory", payload: { dataset } }));
-    } catch (cause) {
-      sendError(res, cause);
-    }
-  });
-
-  /** Validate only. The inspection app reports per-cell errors and writes nothing. */
-  app.post("/api/master/datasets/:name/preview", requireUser, requireWrites, async (req, res) => {
-    const dataset = datasetParam(req, res);
-    if (!dataset) return;
-    try {
-      const cas = casFrom(req.body);
-      const grid = gridPayload(req.body);
       res.json(
-        await adminGrid<PreviewResult>({
-          action: "previewAdminGrid",
-          payload: { dataset, ...grid, ...cas },
+        await gas({
+          action: "getInspectionRows",
+          payload: {
+            jobKey: str(req.query.jobKey),
+            date: str(req.query.date),
+            selectedCenter: str(req.query.center),
+            includeAllCenters: str(req.query.allCenters) || "true",
+            filterMode: str(req.query.filterMode) || "current",
+            includePhotos: str(req.query.includePhotos) || "true",
+          },
         }),
       );
     } catch (cause) {
@@ -246,40 +203,174 @@ export function createApp() {
     }
   });
 
-  /**
-   * Commit. `operationId` makes the write idempotent, so a retry after a
-   * timeout confirms the first attempt instead of applying a second one; the
-   * browser must therefore reuse the id it previewed with.
-   */
-  app.post("/api/master/datasets/:name/save", requireUser, requireWrites, async (req, res) => {
-    const dataset = datasetParam(req, res);
-    if (!dataset) return;
-
-    const operationId = String(req.body?.operationId ?? "").trim();
-    if (!operationId) return res.status(400).json({ error: "operationId가 필요합니다." });
-
+  /** The job the field app is currently working, used to seed the filters. */
+  app.get("/api/ops/current-job", requireUser, async (_req, res) => {
     try {
-      const cas = casFrom(req.body);
-      const grid = gridPayload(req.body);
-      const result = await adminGrid<SaveResult>({
-        action: "saveAdminGrid",
-        operationId,
-        nativeWrite: { version: 1, backend: "supabase", expectedRevision: cas.expectedRevision },
-        payload: { dataset, ...grid, ...cas, operationId },
-      });
-      res.json(result);
+      res.json(await gas({ action: "getCurrentJob" }));
     } catch (cause) {
       sendError(res, cause);
     }
   });
 
-  /** Confirm a save whose response was lost, by the same operation id. */
-  app.post("/api/master/write-status", requireUser, async (req, res) => {
-    const operationId = String(req.body?.operationId ?? "").trim();
-    const payloadHash = String(req.body?.payloadHash ?? "").trim();
+  /** 회송 / 교환 records. */
+  app.get("/api/ops/movements", requireUser, async (req, res) => {
+    try {
+      res.json(
+        await gas({
+          action: "getReturnExchangeRecords",
+          payload: {
+            filterMode: str(req.query.filterMode),
+            jobKey: str(req.query.jobKey),
+            date: str(req.query.date),
+          },
+        }),
+      );
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  app.get("/api/ops/history", requireUser, async (_req, res) => {
+    try {
+      res.json(await gas({ action: "getHistoryData" }));
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  app.get("/api/ops/photos/archive", requireUser, async (req, res) => {
+    try {
+      res.json(await gas({ action: "getPhotoArchive", payload: { date: str(req.query.date) } }));
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  /* ------------------------------------------------------ Save / recovery */
+
+  /**
+   * The receipt for one write. `kind` selects which ledger the app reads, so
+   * it must be the kind the write was made under.
+   */
+  app.post("/api/ops/write-status", requireUser, async (req, res) => {
+    const operationId = str(req.body?.operationId);
     if (!operationId) return res.status(400).json({ error: "operationId가 필요합니다." });
     try {
-      res.json(await adminGrid({ action: "getNativeWriteStatus", operationId, payloadHash }));
+      res.json(
+        await gas({
+          action: "getNativeWriteStatus",
+          kind: str(req.body?.kind) || "action_status",
+          operationId,
+          payloadHash: str(req.body?.payloadHash),
+        }),
+      );
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  /** Ask the app to resolve a write left PENDING or UNKNOWN. */
+  app.post("/api/ops/recover-write", requireUser, requireCorrections, async (req, res) => {
+    const operationId = str(req.body?.operationId);
+    if (!operationId) return res.status(400).json({ error: "operationId가 필요합니다." });
+    try {
+      res.json(
+        await gas({
+          action: "recoverNativeWrite",
+          kind: str(req.body?.kind) || "action_status",
+          operationId,
+          payloadHash: str(req.body?.payloadHash),
+          reason: str(req.body?.reason) || "console recovery",
+        }),
+      );
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  /* ------------------------------------------------------ Safe correction */
+
+  /**
+   * Correct one row's 검품수량.
+   *
+   * `baseQty` and `baseRevision` are the values the operator was looking at.
+   * The app's qty state machine compares them with the stored row and refuses
+   * the write if they have moved, so a correction made against a stale screen
+   * cannot land. `requestId` carries the timestamp the app parses for
+   * ordering and is stable across retries of the same correction.
+   */
+  app.post("/api/ops/correct-qty", requireUser, requireCorrections, async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const jobKey = str(body.jobKey);
+    const productCode = str(body.productCode);
+    const requestId = str(body.requestId);
+    const qty = Number(body.qty);
+
+    if (!jobKey || !productCode) {
+      return res.status(400).json({ error: "jobKey와 productCode가 필요합니다." });
+    }
+    if (!Number.isFinite(qty) || qty < 0 || !Number.isInteger(qty)) {
+      return res.status(400).json({ error: "검품수량은 0 이상의 정수여야 합니다." });
+    }
+    if (!/^qty-\d{10,}-/.test(requestId)) {
+      // The app derives write ordering from this prefix; a different shape
+      // silently loses the timestamp and with it the ordering guarantee.
+      return res.status(400).json({ error: "requestId는 qty-<timestamp>-<id> 형식이어야 합니다." });
+    }
+
+    const hasBaseQty = body.baseQty !== undefined && body.baseQty !== null && body.baseQty !== "";
+    if (!hasBaseQty) {
+      return res.status(400).json({ error: "baseQty가 필요합니다. 화면을 새로 고친 뒤 다시 시도하세요." });
+    }
+
+    try {
+      const saved = await gas({
+        action: "saveInspectionQtyFastBatch",
+        rows: [
+          {
+            type: "inspection",
+            작업기준일또는CSV식별값: jobKey,
+            상품코드: productCode,
+            협력사명: str(body.partnerName),
+            상품명: str(body.productName),
+            검품수량: qty,
+            ...(body.orderQty === undefined ? {} : { 발주수량: Number(body.orderQty) }),
+            baseQty: Number(body.baseQty),
+            ...(body.baseRevision === undefined || body.baseRevision === null
+              ? {}
+              : { baseRevision: Number(body.baseRevision) }),
+            requestId,
+            isUserAction: true,
+            explicitZero: qty === 0,
+          },
+        ],
+      });
+
+      res.json({ saved });
+    } catch (cause) {
+      sendError(res, cause);
+    }
+  });
+
+  /**
+   * Read the canonical row back and say whether this exact request landed.
+   * This is how an unknown or timed-out correction is resolved - by reading,
+   * never by writing again.
+   */
+  app.post("/api/ops/confirm-qty", requireUser, async (req, res) => {
+    const jobKey = str(req.body?.jobKey);
+    const productCode = str(req.body?.productCode);
+    const requestId = str(req.body?.requestId);
+    if (!jobKey || !productCode) {
+      return res.status(400).json({ error: "jobKey와 productCode가 필요합니다." });
+    }
+    try {
+      res.json(
+        await gas({
+          action: "confirmInspectionQty",
+          payload: { jobKey, productCode, requestId, 상품코드: productCode, 작업기준일또는CSV식별값: jobKey },
+        }),
+      );
     } catch (cause) {
       sendError(res, cause);
     }

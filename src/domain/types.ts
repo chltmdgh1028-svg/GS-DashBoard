@@ -1,10 +1,11 @@
 /**
- * Inspection Master Console - shared types.
+ * Inspection Operations Console - shared types.
  *
- * These mirror the inspection app's admin-grid contract exactly, because the
- * console is a second UI over that API rather than its own data model. The
- * grid is positional: `rows` is an array of rows, each an array of cells in
- * `columns` order, which is how the app validates and diffs them.
+ * The inspection app answers with the field app's own row shape: Korean
+ * column names, loosely typed cells, `__`-prefixed internals. Those names are
+ * kept verbatim rather than mapped to English, so a value on this screen and
+ * a value in the field app are visibly the same field and a row discussed in
+ * one is findable in the other.
  */
 
 export type Role = "admin";
@@ -15,86 +16,98 @@ export interface AuthenticatedUser {
   displayName: string;
 }
 
-/* --------------------------------------------------------------- Datasets */
-
-/** The master datasets the inspection app exposes - the Google Sheet tabs. */
-export interface DatasetEntry {
-  name: string;
-  label: string;
+/**
+ * One inspection row as `getInspectionRows` returns it. Only the fields the
+ * console actually reads are named; the rest stay accessible through the
+ * index signature, because the app may add a column without a release here.
+ */
+export interface InspectionRow {
+  __rowNumber?: number;
+  작업기준일또는CSV식별값?: string;
+  상품코드?: string;
+  상품명?: string;
+  협력사명?: string;
+  센터명?: string;
+  발주수량?: number | string;
+  검품수량?: number | string;
+  불량수량?: number | string;
+  불량사유?: string;
+  비고?: string;
+  버전?: number | string;
+  작성일시?: string;
+  수정일시?: string;
+  [key: string]: unknown;
 }
 
-/* ------------------------------------------------------------------- Grid */
-
-export interface GridColumn {
-  key?: string;
-  label: string;
-  /** The app's inferred cell type: text, code, number, date, … */
-  type: string;
-  readOnly?: boolean;
-  required?: boolean;
-  options?: string[];
+export interface InspectionRowsResponse {
+  ok?: boolean;
+  rows?: InspectionRow[];
+  diagnostics?: Record<string, unknown>;
+  photos?: unknown;
+  [key: string]: unknown;
 }
 
-export interface RowMetadata {
-  updatedAt?: string;
-  updatedBy?: string;
+/** 회송 / 교환 record. Same treatment: the app's own field names. */
+export interface MovementRecord {
+  __rowNumber?: number;
+  구분?: string;
+  상품코드?: string;
+  상품명?: string;
+  협력사명?: string;
+  센터명?: string;
+  수량?: number | string;
+  사유?: string;
+  처리상태?: string;
+  작성일시?: string;
+  [key: string]: unknown;
 }
 
-/** `getAdminGrid`: the current state of one dataset. */
-export interface GridView {
-  dataset: string;
-  label: string;
-  columns: GridColumn[];
-  /** Positional cells, in `columns` order. */
-  rows: string[][];
-  /** CAS token. Echoed on preview and save; a mismatch is a write conflict. */
-  revision: number;
-  /** Hash of the source the view was built from. Also part of the CAS check. */
-  sourceHash: string;
-  rowMetadata?: RowMetadata[];
-  sourceOwner?: string;
+/* ------------------------------------------------------- Write receipts */
+
+/** The native write ledger's verdict on one operation. */
+export interface NativeAck {
+  version?: number;
+  backend?: string;
+  operationId?: string;
+  kind?: string;
+  payloadHash?: string | null;
+  /** COMMITTED | REJECTED | PENDING | UNKNOWN */
+  state?: string;
+  authoritative?: boolean;
+  retryAfterMs?: number;
 }
 
-export interface CellError {
-  row: number;
-  col: number;
-  message: string;
-}
-
-export interface RowWarning {
-  row: number;
-  message: string;
-}
-
-/** `previewAdminGrid`: what a save would do. Writes nothing. */
-export interface PreviewResult {
-  ok: boolean;
-  rows?: string[][];
-  columns?: GridColumn[];
-  errors: CellError[];
-  warnings?: RowWarning[];
-  /** The app's row-level diff against the current view. */
-  changes?: unknown[];
-  matches?: unknown[];
-}
-
-/** `saveAdminGrid`: the commit receipt. */
-export interface SaveResult {
-  ok: boolean;
+export interface WriteReceipt {
+  ok?: boolean;
   error?: string;
   message?: string;
   pendingWrite?: boolean;
   retryable?: boolean;
-  nativeAck?: {
-    state: string;
-    operationId: string;
-    payloadHash: string | null;
-    authoritative: boolean;
-  };
+  nativeAck?: NativeAck;
+  [key: string]: unknown;
 }
 
-export interface HistoryResult {
-  changes: unknown[];
+/** `confirmInspectionQty`: whether this exact request is what the row now holds. */
+export interface QtyConfirmation {
+  ok?: boolean;
+  matches?: boolean;
+  requestIdMatched?: boolean;
+  [key: string]: unknown;
+}
+
+/** What a correction needs from the row it was made against. */
+export interface QtyCorrection {
+  jobKey: string;
+  productCode: string;
+  partnerName?: string;
+  productName?: string;
+  qty: number;
+  orderQty?: number;
+  /** The qty the operator was looking at. The app refuses the write if it moved. */
+  baseQty: number;
+  baseRevision?: number;
+  /** `qty-<timestamp>-<id>`; stable across retries of the same correction. */
+  requestId: string;
 }
 
 /* ----------------------------------------------------------------- Health */
@@ -105,5 +118,7 @@ export interface ConsoleHealth {
   sessionSecretConfigured: boolean;
   inspectionApiConfigured: boolean;
   missingInspectionVars: string[];
-  writesEnabled: boolean;
+  correctionsEnabled: boolean;
+  adminGridUrl: string | null;
+  inspectionBase: string | null;
 }

@@ -6,10 +6,13 @@
  * list it probably does not need an icon - plain text is the default.
  */
 export {
-  /* Console */
-  Table2 as IconMaster,
-  UserRound as IconUser,
+  /* Console sections */
+  ClipboardList as IconRows,
+  Undo2 as IconMovement,
   History as IconHistory,
+  ReceiptText as IconReceipt,
+  ExternalLink as IconExternal,
+  UserRound as IconUser,
 
   /* Status / feedback */
   TriangleAlert as IconWarning,
@@ -18,10 +21,6 @@ export {
   CircleCheck as IconOk,
 
   /* Controls */
-  ArrowUp as IconArrowUp,
-  ArrowDown as IconArrowDown,
-  Minus as IconFlat,
-  ChevronsUpDown as IconSortable,
   Search as IconSearch,
   X as IconClose,
   CircleHelp as IconHelp,

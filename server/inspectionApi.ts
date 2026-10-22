@@ -1,33 +1,20 @@
 /**
- * Client for the inspection app's admin-grid API.
+ * Client for the inspection app's operational API (`POST {base}/api/gas`).
  *
- * This is the only way the console reaches canonical data, and it is
- * deliberately not a Supabase client. The inspection app's `adminGrid`
- * module holds the validation that protects the master rows - criteria JSON
- * preservation, duplicate-rule detection, 사용여부 coercion, product-code
- * normalisation, reservation quantity rules, work-schedule parsing - and it
- * stamps 수정자/수정일시 from the real session user. A second implementation
- * writing the same rows through `app_grid_decide` would have to reproduce all
- * of that exactly or corrupt the master, so the console calls it instead.
+ * The console never talks to Supabase or R2 directly. That endpoint already
+ * owns identity normalisation (job base key, canonical partner, record id),
+ * the qty state machine with its CAS base, the movement state machine, and
+ * the native write receipts. Re-implementing any of it here would make this a
+ * second writer that has to match the first exactly or corrupt canonical rows.
  *
- * Actions (POST {base}/api/admin-grid):
- *   getAdminGrid        -> the dataset view: columns, rows, revision, sourceHash
- *   previewAdminGrid    -> validation result; writes nothing
- *   saveAdminGrid       -> commits, via app_grid_decide
- *   getAdminGridHistory -> change list
- *   getAdminGridChange  -> one change, before/after diff
- *
- * Calls are server-to-server. No Origin header is sent, so the app's origin
- * allowlist is satisfied without adding this console to it, and the session
- * token never reaches a browser.
+ * Calls are server-to-server, so no Origin header is sent and the app's origin
+ * allowlist needs no entry for this console; the session token stays on our
+ * server. `clientPlatform: "service"` marks the request as a service
+ * integration so the minimum-client-version gate does not mistake it for a
+ * stale field build - the same exemption the Inspection Dashboard uses.
  */
 import { inspectionApiConfig, missingInspectionVars } from "./config.js";
 
-/**
- * Declared so the inspection app's minimum-client-version gate treats this as
- * a service integration rather than a stale field build - the same exemption
- * the Inspection Dashboard server uses.
- */
 const CALLER = "inspection-master-console";
 
 export class NotConfiguredError extends Error {
@@ -43,48 +30,67 @@ export class InspectionApiError extends Error {
   readonly action: string;
   readonly code?: string;
   readonly status: number;
+  /** True when the app says the condition is temporary and the same request may be retried. */
+  readonly retryable: boolean;
 
-  constructor(action: string, status: number, message: string, code?: string) {
+  constructor(action: string, status: number, message: string, code?: string, retryable = false) {
     super(message);
     this.action = action;
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
   }
 }
 
 const TIMEOUT_MS = Number(process.env.INSPECTION_TIMEOUT_MS || 30_000);
 
-/**
- * Error codes the app returns in a 200 body. They are business outcomes, not
- * transport failures, so each maps to the status that describes it.
- */
+/** Error codes the app returns inside a 200 body, mapped to what they mean. */
 const CODE_STATUS: Record<string, number> = {
-  NATIVE_WRITE_CONFLICT: 409,
-  GRID_DATASET_INVALID: 404,
-  GRID_CHANGE_NOT_FOUND: 404,
-  GRID_ACTION_INVALID: 400,
-  GRID_COLUMNS_INVALID: 400,
-  GRID_ROWS_INVALID: 400,
-  GRID_COLUMNS_CANNOT_DISCARD_SOURCE: 400,
-  GRID_DATASET_TOO_LARGE: 413,
-  GRID_PAYLOAD_TOO_LARGE: 413,
-  NATIVE_BACKEND_NOT_CONFIGURED: 503,
-  NATIVE_CANONICAL_REQUIRED: 503,
-  NATIVE_AUTH_UNCONFIRMED: 401,
+  AUTH_REQUIRED: 401,
+  FORBIDDEN: 403,
+  USER_BLOCKED: 403,
   ORIGIN_NOT_ALLOWED: 502,
   CLIENT_UPDATE_REQUIRED: 502,
+  GAS_URL_NOT_CONFIGURED: 503,
+  NATIVE_CANONICAL_REQUIRED: 503,
+  NATIVE_HISTORY_UNAVAILABLE: 503,
+  NATIVE_HISTORY_AUTHORITY_UNKNOWN: 503,
+  NATIVE_WRITE_CONFLICT: 409,
+  NATIVE_WRITE_PENDING: 202,
+  NATIVE_WRITE_UNKNOWN: 202,
+  POST_ACTION_FAILED: 502,
 };
 
-export interface AdminGridRequest {
+export interface GasRequest {
   action: string;
+  /** Native-write identity. Required by `updateActionStatus` and the receipt actions. */
+  kind?: string;
   operationId?: string;
-  /** getNativeWriteStatus reads this at the top level, not inside payload. */
   payloadHash?: string;
+  reason?: string;
   nativeWrite?: { version: 1; backend: "supabase"; expectedRevision: number };
+  rows?: unknown[];
   payload?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
-export async function adminGrid<T>(request: AdminGridRequest): Promise<T> {
+/**
+ * A response that reports a transient failure. These are not errors to show
+ * as "it broke": the write may still land, so the caller has to check the
+ * receipt rather than assume either outcome.
+ */
+export interface GasEnvelope {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  pendingWrite?: boolean;
+  isTransient?: boolean;
+  retryable?: boolean;
+  nativeAck?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export async function gas<T extends GasEnvelope>(request: GasRequest): Promise<T> {
   const config = inspectionApiConfig();
   if (!config) throw new NotConfiguredError(missingInspectionVars());
 
@@ -92,7 +98,7 @@ export async function adminGrid<T>(request: AdminGridRequest): Promise<T> {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${config.base}/api/admin-grid`, {
+    const response = await fetch(`${config.base}/api/gas`, {
       method: "POST",
       signal: controller.signal,
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -109,10 +115,14 @@ export async function adminGrid<T>(request: AdminGridRequest): Promise<T> {
     try {
       body = text ? JSON.parse(text) : undefined;
     } catch {
-      throw new InspectionApiError(request.action, 502, `검품 앱이 JSON이 아닌 응답을 보냈습니다: ${text.slice(0, 200)}`);
+      throw new InspectionApiError(
+        request.action,
+        502,
+        `검품 앱이 JSON이 아닌 응답을 보냈습니다: ${text.slice(0, 200)}`,
+      );
     }
 
-    const envelope = (body ?? {}) as { ok?: boolean; error?: string; message?: string };
+    const envelope = (body ?? {}) as GasEnvelope;
 
     if (!response.ok) {
       throw new InspectionApiError(
@@ -120,27 +130,45 @@ export async function adminGrid<T>(request: AdminGridRequest): Promise<T> {
         response.status,
         envelope.message || envelope.error || `HTTP ${response.status}`,
         envelope.error,
+        envelope.retryable === true,
       );
     }
 
-    // The app answers business failures with HTTP 200 and ok:false.
-    if (envelope.ok === false) {
+    // A pending or unknown write is returned to the caller rather than thrown:
+    // the operation may have committed, and the only correct next step is to
+    // read the receipt, not to retry blindly or report a failure.
+    if (envelope.ok === false && !envelope.pendingWrite) {
       const code = envelope.error;
       throw new InspectionApiError(
         request.action,
         (code ? CODE_STATUS[code] : undefined) ?? 409,
         envelope.message || code || `${request.action} 요청이 거부되었습니다.`,
         code,
+        envelope.retryable === true || envelope.isTransient === true,
       );
     }
 
-    return body as T;
+    return envelope as T;
   } catch (cause) {
     if (cause instanceof InspectionApiError || cause instanceof NotConfiguredError) throw cause;
     if (cause instanceof Error && cause.name === "AbortError") {
-      throw new InspectionApiError(request.action, 504, `검품 앱이 ${TIMEOUT_MS}ms 안에 응답하지 않았습니다.`);
+      // A timed-out write is not a failed write. Surface it as retryable so the
+      // caller checks the receipt by operation id instead of resubmitting.
+      throw new InspectionApiError(
+        request.action,
+        504,
+        `검품 앱이 ${TIMEOUT_MS}ms 안에 응답하지 않았습니다. 저장 여부는 저장/복구 상태에서 확인하세요.`,
+        "TIMEOUT",
+        true,
+      );
     }
-    throw new InspectionApiError(request.action, 502, cause instanceof Error ? cause.message : String(cause));
+    throw new InspectionApiError(
+      request.action,
+      502,
+      cause instanceof Error ? cause.message : String(cause),
+      undefined,
+      true,
+    );
   } finally {
     clearTimeout(timer);
   }

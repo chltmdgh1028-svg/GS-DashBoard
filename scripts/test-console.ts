@@ -1,22 +1,20 @@
 /**
  * Self-check for the console's non-trivial logic.
  *
- * It runs against a stub that speaks the inspection app's admin-grid
+ * It runs against a stub that speaks the inspection app's `/api/gas`
  * protocol, never against production: the point is to prove this console
  * sends what that API expects and refuses what it should refuse, not to
- * exercise someone else's live master data.
+ * exercise live inspection data.
  *
- * What is checked is what would be silently wrong rather than loudly broken:
- * the CAS pair reaching the app unaltered, the write gate, the dataset
- * allowlist, idempotent operation ids, the service-caller marking that keeps
- * the client-version gate from rejecting us, and error-code mapping.
+ * The correction path gets the most attention, because it is the only write
+ * and the ways it can be silently wrong are the expensive ones: a lost CAS
+ * base overwrites someone else's edit, a malformed requestId loses write
+ * ordering, and a retried timeout double-applies.
  *
  * Run with `npm test`.
  */
 import assert from "node:assert/strict";
 import http from "node:http";
-
-/* ------------------------------------------------- stub inspection app */
 
 interface Received {
   action: string;
@@ -24,26 +22,23 @@ interface Received {
 }
 
 const received: Received[] = [];
-/** Set to make the stub answer a business failure for the next call. */
-let failWith: { error: string; message?: string } | undefined;
+/** Makes the stub answer the next call with this body instead of the default. */
+let nextResponse: Record<string, unknown> | undefined;
 
-const VIEW = {
-  ok: true,
-  dataset: "event_rows",
-  label: "행사표",
-  columns: [
-    { key: "상품코드", label: "상품코드", type: "text", readOnly: false },
-    { key: "행사명", label: "행사명", type: "text", readOnly: false },
-    { key: "수정자", label: "수정자", type: "text", readOnly: true },
-  ],
-  rows: [
-    ["8800001", "가을 행사", "kim"],
-    ["8800002", "겨울 행사", "lee"],
-  ],
-  revision: 42,
-  sourceHash: "hash-42",
-  sourceOwner: "supabase",
-};
+const ROWS = [
+  {
+    __rowNumber: 2,
+    작업기준일또는CSV식별값: "JOB-20261022",
+    상품코드: "8800001",
+    상품명: "사과 부사 5kg",
+    협력사명: "가온프레시",
+    센터명: "수도권센터",
+    발주수량: 100,
+    검품수량: 90,
+    불량수량: 5,
+    불량사유: "외관 불량",
+  },
+];
 
 const stub = http.createServer((req, res) => {
   let raw = "";
@@ -58,19 +53,24 @@ const stub = http.createServer((req, res) => {
       res.end(JSON.stringify(payload));
     };
 
-    if (failWith) {
-      const failure = failWith;
-      failWith = undefined;
-      return send({ ok: false, ...failure });
+    if (nextResponse) {
+      const response = nextResponse;
+      nextResponse = undefined;
+      return send(response);
     }
 
-    if (body.action === "getAdminGrid") return send(VIEW);
-    if (body.action === "previewAdminGrid") return send({ ok: true, errors: [], changes: [{ row: 0 }] });
-    if (body.action === "saveAdminGrid") {
+    if (body.action === "getInspectionRows") {
+      return send({ ok: true, rows: ROWS, diagnostics: { role: "ADMIN", filterMode: "current" } });
+    }
+    if (body.action === "getReturnExchangeRecords") return send({ ok: true, records: [] });
+    if (body.action === "getHistoryData") return send({ ok: true, data: [] });
+    if (body.action === "saveInspectionQtyFastBatch") return send({ ok: true, version: 7 });
+    if (body.action === "confirmInspectionQty") return send({ ok: true, matches: true, requestIdMatched: true });
+    if (body.action === "getNativeWriteStatus") {
       return send({ ok: true, nativeAck: { version: 1, backend: "supabase", state: "COMMITTED", authoritative: true } });
     }
-    if (body.action === "getAdminGridHistory") return send({ ok: true, changes: [] });
-    return send({ ok: false, error: "GRID_ACTION_INVALID" });
+    if (body.action === "recoverNativeWrite") return send({ ok: true, nativeAck: { state: "COMMITTED" } });
+    return send({ ok: false, error: "UNSUPPORTED" });
   });
 });
 
@@ -83,188 +83,197 @@ process.env.INSPECTION_SESSION_TOKEN = "stub-session-token";
 process.env.ADMIN_ID = "ops";
 process.env.ADMIN_PASSWORD = "test-admin-password";
 process.env.SESSION_SECRET = "test-session-secret";
-process.env.MASTER_WRITES_ENABLED = "true";
+process.env.CORRECTIONS_ENABLED = "true";
 
 const { createApp } = await import("../server/app.js");
 
-const app = createApp();
-const server = app.listen(0, "127.0.0.1");
-await new Promise((resolve) => server.once("listening", resolve));
-const address = server.address();
-if (!address || typeof address === "string") throw new Error("server did not bind");
-const base = `http://127.0.0.1:${address.port}`;
+async function start() {
+  const app = createApp();
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  const base = `http://127.0.0.1:${address.port}`;
 
-const json = (response: Response) => response.json() as Promise<Record<string, unknown>>;
-
-async function post(path: string, body: unknown, cookie = "") {
-  return fetch(`${base}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) },
-    body: JSON.stringify(body),
-  });
-}
-
-try {
-  /* ------------------------------------------------------------- auth */
-
-  const legacy = await post("/api/login", { userId: "admin", password: "fresh1652" });
-  assert.equal(legacy.status, 401, "legacy default credentials must be rejected");
-
-  const anonymous = await fetch(`${base}/api/master/datasets/event_rows`);
-  assert.equal(anonymous.status, 401, "unauthenticated reads must be refused");
-
-  const signIn = await post("/api/login", { userId: "ops", password: "test-admin-password" });
-  assert.equal(signIn.status, 200, "admin login must succeed");
-  const cookie = signIn.headers.get("set-cookie")?.split(";")[0] ?? "";
-  assert.ok(cookie, "login must set a session cookie");
-
-  /* ------------------------------------------------------------- reads */
-
-  const datasets = await fetch(`${base}/api/master/datasets`, { headers: { cookie } }).then(json);
-  assert.equal((datasets.datasets as unknown[]).length, 8, "all eight master datasets must be listed");
-
-  const unknown = await fetch(`${base}/api/master/datasets/not_a_dataset`, { headers: { cookie } });
-  assert.equal(unknown.status, 404, "an unknown dataset must be refused before reaching the app");
-  assert.ok(
-    !received.some((entry) => (entry.body.payload as { dataset?: string })?.dataset === "not_a_dataset"),
-    "an unknown dataset must never be forwarded",
-  );
-
-  const viewResponse = await fetch(`${base}/api/master/datasets/event_rows`, { headers: { cookie } }).then(json);
-  const view = viewResponse.view as typeof VIEW;
-  assert.equal(view.revision, 42);
-  assert.equal(view.sourceHash, "hash-42");
-
-  // Every call must mark itself as a service integration, or the inspection
-  // app's minimum-client-version gate answers CLIENT_UPDATE_REQUIRED.
-  const readCall = received.find((entry) => entry.action === "getAdminGrid");
-  assert.equal(readCall?.body.clientPlatform, "service", "calls must declare clientPlatform service");
-  assert.equal(readCall?.body.caller, "inspection-master-console", "calls must declare a caller");
-  assert.equal(readCall?.body.sessionToken, "stub-session-token", "the session token must be attached server-side");
-
-  /* ------------------------------------------------------------ writes */
-
-  const submission = {
-    columns: view.columns.map((column) => column.label),
-    rows: [
-      ["8800001", "가을 행사 수정", "kim"],
-      ["8800002", "겨울 행사", "lee"],
-    ],
-    expectedRevision: view.revision,
-    sourceHash: view.sourceHash,
-  };
-
-  const preview = await post("/api/master/datasets/event_rows/preview", submission, cookie);
-  assert.equal(preview.status, 200, "preview must succeed");
-  const previewCall = received.findLast((entry) => entry.action === "previewAdminGrid");
-  const previewPayload = previewCall?.body.payload as Record<string, unknown>;
-  assert.equal(previewPayload.expectedRevision, 42, "preview must carry the CAS revision");
-  assert.equal(previewPayload.sourceHash, "hash-42", "preview must carry the CAS source hash");
-
-  // A missing or malformed CAS pair must be refused here: the far side would
-  // throw NATIVE_WRITE_INVALID, which is a much less useful message.
-  for (const bad of [
-    { ...submission, expectedRevision: undefined },
-    { ...submission, expectedRevision: -1 },
-    { ...submission, expectedRevision: 1.5 },
-    { ...submission, sourceHash: "" },
-  ]) {
-    const response = await post("/api/master/datasets/event_rows/preview", bad, cookie);
-    assert.equal(response.status, 400, `malformed CAS must be refused: ${JSON.stringify(bad.expectedRevision)}`);
-  }
-
-  const noOperation = await post("/api/master/datasets/event_rows/save", submission, cookie);
-  assert.equal(noOperation.status, 400, "a save without an operationId must be refused");
-
-  const operationId = "op-0001";
-  const saved = await post(
-    "/api/master/datasets/event_rows/save",
-    { ...submission, operationId },
-    cookie,
-  );
-  assert.equal(saved.status, 200, "save must succeed");
-
-  const saveCall = received.findLast((entry) => entry.action === "saveAdminGrid");
-  assert.equal(saveCall?.body.operationId, operationId, "the operation id must reach the app unchanged");
-  const nativeWrite = saveCall?.body.nativeWrite as Record<string, unknown>;
-  assert.deepEqual(
-    nativeWrite,
-    { version: 1, backend: "supabase", expectedRevision: 42 },
-    "nativeWrite must match what identity() requires",
-  );
-  assert.equal(
-    (saveCall?.body.payload as Record<string, unknown>).expectedRevision,
-    nativeWrite.expectedRevision,
-    "payload and nativeWrite revisions must agree, or the app rejects the write",
-  );
-
-  /* ------------------------------------------------------- error mapping */
-
-  failWith = { error: "NATIVE_WRITE_CONFLICT", message: "원본 revision이 다릅니다." };
-  const conflict = await post("/api/master/datasets/event_rows/save", { ...submission, operationId }, cookie);
-  assert.equal(conflict.status, 409, "a write conflict must surface as 409, not 200");
-
-  failWith = { error: "GRID_DATASET_TOO_LARGE" };
-  const tooLarge = await fetch(`${base}/api/master/datasets/product_master`, { headers: { cookie } });
-  assert.equal(tooLarge.status, 413, "GRID_DATASET_TOO_LARGE must surface as 413");
-
-  /* --------------------------------------------------------- write gate */
-
-  process.env.MASTER_WRITES_ENABLED = "false";
-  const readOnlyApp = createApp();
-  const readOnlyServer = readOnlyApp.listen(0, "127.0.0.1");
-  await new Promise((resolve) => readOnlyServer.once("listening", resolve));
-  const readOnlyAddress = readOnlyServer.address();
-  if (!readOnlyAddress || typeof readOnlyAddress === "string") throw new Error("no port");
-
-  const readOnlyLogin = await fetch(`http://127.0.0.1:${readOnlyAddress.port}/api/login`, {
+  const signIn = await fetch(`${base}/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ userId: "ops", password: "test-admin-password" }),
   });
-  const readOnlyCookie = readOnlyLogin.headers.get("set-cookie")?.split(";")[0] ?? "";
+  return { server, base, cookie: signIn.headers.get("set-cookie")?.split(";")[0] ?? "", status: signIn.status };
+}
 
+const main = await start();
+const { base, cookie } = main;
+
+const json = (response: Response) => response.json() as Promise<Record<string, unknown>>;
+const post = (path: string, body: unknown, jar = cookie) =>
+  fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(jar ? { cookie: jar } : {}) },
+    body: JSON.stringify(body),
+  });
+
+/** A correction the row actually supports, reused across the checks. */
+const correction = {
+  jobKey: "JOB-20261022",
+  productCode: "8800001",
+  partnerName: "가온프레시",
+  productName: "사과 부사 5kg",
+  qty: 95,
+  orderQty: 100,
+  baseQty: 90,
+  requestId: `qty-${Date.now()}-abcd1234`,
+};
+
+try {
+  /* -------------------------------------------------------------- auth */
+
+  assert.equal(main.status, 200, "admin login must succeed");
+  assert.ok(cookie, "login must set a session cookie");
+
+  const legacy = await post("/api/login", { userId: "admin", password: "fresh1652" }, "");
+  assert.equal(legacy.status, 401, "legacy default credentials must be rejected");
+
+  const anonymous = await fetch(`${base}/api/ops/rows`);
+  assert.equal(anonymous.status, 401, "unauthenticated reads must be refused");
+
+  /* ------------------------------------------------------------- reads */
+
+  const rows = await fetch(`${base}/api/ops/rows?jobKey=JOB-20261022&filterMode=all`, {
+    headers: { cookie },
+  }).then(json);
+  assert.equal((rows.rows as unknown[]).length, 1, "rows must pass through unchanged");
+
+  const rowCall = received.findLast((entry) => entry.action === "getInspectionRows");
+  const rowPayload = rowCall?.body.payload as Record<string, unknown>;
+  assert.equal(rowPayload.jobKey, "JOB-20261022", "filters must reach the app");
+  assert.equal(rowPayload.filterMode, "all");
+  assert.equal(rowPayload.includePhotos, "true", "photos must be requested with the rows");
+
+  // Every call must mark itself as a service integration, or the app's
+  // minimum-client-version gate answers CLIENT_UPDATE_REQUIRED.
+  assert.equal(rowCall?.body.clientPlatform, "service", "calls must declare clientPlatform service");
+  assert.equal(rowCall?.body.caller, "inspection-master-console", "calls must declare a caller");
+  assert.equal(rowCall?.body.sessionToken, "stub-session-token", "the token must be attached server-side");
+
+  await fetch(`${base}/api/ops/movements`, { headers: { cookie } }).then(json);
+  await fetch(`${base}/api/ops/history`, { headers: { cookie } }).then(json);
+
+  /* -------------------------------------------------- correction guards */
+
+  for (const [label, body] of [
+    ["missing baseQty", { ...correction, baseQty: undefined }],
+    ["negative qty", { ...correction, qty: -1 }],
+    ["fractional qty", { ...correction, qty: 1.5 }],
+    ["missing jobKey", { ...correction, jobKey: "" }],
+    ["bare uuid requestId", { ...correction, requestId: "0f8c2b1a" }],
+    ["requestId without timestamp", { ...correction, requestId: "qty-abc-1" }],
+  ] as const) {
+    const before = received.length;
+    const response = await post("/api/ops/correct-qty", body);
+    assert.equal(response.status, 400, `${label} must be refused`);
+    assert.equal(received.length, before, `${label} must never reach the inspection app`);
+  }
+
+  /* ------------------------------------------------------ correction ok */
+
+  const saved = await post("/api/ops/correct-qty", correction);
+  assert.equal(saved.status, 200, "a well-formed correction must be accepted");
+
+  const saveCall = received.findLast((entry) => entry.action === "saveInspectionQtyFastBatch");
+  const row = (saveCall?.body.rows as Record<string, unknown>[])[0];
+  assert.equal(row.type, "inspection");
+  assert.equal(row["검품수량"], 95, "the new qty must be sent");
+  assert.equal(row.baseQty, 90, "the CAS base must be sent, or a stale correction would overwrite");
+  assert.equal(row.requestId, correction.requestId, "the requestId must reach the app unchanged");
+  assert.equal(row.isUserAction, true);
+  assert.equal(row.explicitZero, false, "a non-zero correction must not be flagged explicitZero");
+  assert.equal(row["작업기준일또는CSV식별값"], correction.jobKey);
+
+  // Zero is a real correction, not an empty one, and must say so or the app
+  // treats the field as absent.
+  await post("/api/ops/correct-qty", { ...correction, qty: 0, requestId: `qty-${Date.now()}-zero0000` });
+  const zeroRow = (received.findLast((entry) => entry.action === "saveInspectionQtyFastBatch")
+    ?.body.rows as Record<string, unknown>[])[0];
+  assert.equal(zeroRow["검품수량"], 0);
+  assert.equal(zeroRow.explicitZero, true, "a zero correction must set explicitZero");
+
+  /* --------------------------------------------------- uncertain outcome */
+
+  // A pending write must come back as pending rather than throwing, so the
+  // caller resolves it by reading instead of writing again.
+  nextResponse = { ok: false, pendingWrite: true, error: "NATIVE_WRITE_PENDING", message: "확인 중" };
+  const pending = await post("/api/ops/correct-qty", {
+    ...correction,
+    requestId: `qty-${Date.now()}-pend0001`,
+  });
+  assert.equal(pending.status, 200, "a pending write must not be reported as a failure");
+  const pendingBody = (await pending.json()) as { saved: { pendingWrite?: boolean } };
+  assert.equal(pendingBody.saved.pendingWrite, true, "the pending flag must reach the browser");
+
+  const confirmed = await post("/api/ops/confirm-qty", {
+    jobKey: correction.jobKey,
+    productCode: correction.productCode,
+    requestId: correction.requestId,
+  }).then(json);
+  assert.equal(confirmed.matches, true, "confirmation must read the canonical row back");
+
+  /* ------------------------------------------------- receipts / recovery */
+
+  const receipt = await post("/api/ops/write-status", {
+    operationId: "op-1",
+    kind: "action_status",
+  }).then(json);
+  assert.equal((receipt.nativeAck as Record<string, unknown>).state, "COMMITTED");
+
+  const noOperation = await post("/api/ops/write-status", { kind: "action_status" });
+  assert.equal(noOperation.status, 400, "a receipt lookup needs an operationId");
+
+  main.server.close();
+
+  /* ----------------------------------------------------- correction gate */
+
+  process.env.CORRECTIONS_ENABLED = "false";
+  const readOnly = await start();
   const before = received.length;
-  const blocked = await fetch(
-    `http://127.0.0.1:${readOnlyAddress.port}/api/master/datasets/event_rows/save`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", cookie: readOnlyCookie },
-      body: JSON.stringify({ ...submission, operationId: "op-0002" }),
-    },
-  );
-  assert.equal(blocked.status, 403, "writes must be refused when MASTER_WRITES_ENABLED is not true");
+
+  const blockedCorrection = await fetch(`${readOnly.base}/api/ops/correct-qty`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", cookie: readOnly.cookie },
+    body: JSON.stringify(correction),
+  });
+  assert.equal(blockedCorrection.status, 403, "corrections must be refused when not enabled");
+
+  const blockedRecovery = await fetch(`${readOnly.base}/api/ops/recover-write`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", cookie: readOnly.cookie },
+    body: JSON.stringify({ operationId: "op-1", kind: "action_status" }),
+  });
+  assert.equal(blockedRecovery.status, 403, "recovery must be refused when corrections are not enabled");
   assert.equal(received.length, before, "a blocked write must never reach the inspection app");
-  readOnlyServer.close();
+
+  // Reading stays available on a read-only deployment.
+  const stillReads = await fetch(`${readOnly.base}/api/ops/rows`, { headers: { cookie: readOnly.cookie } });
+  assert.equal(stillReads.status, 200, "a read-only deployment must still read");
+  readOnly.server.close();
 
   /* ------------------------------------------------------ not configured */
 
   delete process.env.INSPECTION_APP_BASE;
-  const unconfiguredApp = createApp();
-  const unconfiguredServer = unconfiguredApp.listen(0, "127.0.0.1");
-  await new Promise((resolve) => unconfiguredServer.once("listening", resolve));
-  const unconfiguredAddress = unconfiguredServer.address();
-  if (!unconfiguredAddress || typeof unconfiguredAddress === "string") throw new Error("no port");
-
-  const health = await fetch(`http://127.0.0.1:${unconfiguredAddress.port}/api/health`).then(json);
-  assert.equal(health.inspectionApiConfigured, false, "health must report the missing connection");
+  const unconfigured = await start();
+  const health = await fetch(`${unconfigured.base}/api/health`).then(json);
+  assert.equal(health.inspectionApiConfigured, false);
   assert.deepEqual(health.missingInspectionVars, ["INSPECTION_APP_BASE"]);
 
-  const unconfiguredLogin = await fetch(`http://127.0.0.1:${unconfiguredAddress.port}/api/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId: "ops", password: "test-admin-password" }),
+  const unconfiguredRead = await fetch(`${unconfigured.base}/api/ops/rows`, {
+    headers: { cookie: unconfigured.cookie },
   });
-  const unconfiguredCookie = unconfiguredLogin.headers.get("set-cookie")?.split(";")[0] ?? "";
-  const unconfiguredRead = await fetch(
-    `http://127.0.0.1:${unconfiguredAddress.port}/api/master/datasets/event_rows`,
-    { headers: { cookie: unconfiguredCookie } },
-  );
   assert.equal(unconfiguredRead.status, 503, "an unconfigured console must report 503, never fabricate data");
-  unconfiguredServer.close();
+  unconfigured.server.close();
 
-  console.log(`OK  datasets=8 stubCalls=${received.length}`);
+  console.log(`OK  stubCalls=${received.length}`);
 } finally {
-  server.close();
+  main.server.close();
   stub.close();
 }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { AuthenticatedUser } from "../domain/types";
 import { login } from "../api";
 import { Button, Field, Input, Notice } from "../ui";
-import { IconError, IconMaster } from "../ui/icons";
+import { IconError, IconRows } from "../ui/icons";
 
 export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser) => void }) {
   const [userId, setUserId] = useState("");
@@ -28,9 +28,9 @@ export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <IconMaster size={24} aria-hidden />
-          <strong style={{ fontSize: "var(--fs-lg)" }}>검품 마스터 콘솔</strong>
-          <span className="muted">Inspection Master Console</span>
+          <IconRows size={24} aria-hidden />
+          <strong style={{ fontSize: "var(--fs-lg)" }}>검품 운영 콘솔</strong>
+          <span className="muted">Inspection Operations Console</span>
         </div>
 
         {error && (

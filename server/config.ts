@@ -35,10 +35,29 @@ export function missingInspectionVars() {
 }
 
 /**
- * Writes are off unless explicitly enabled. The console edits canonical
- * inspection master data, so the ability to do so is a deployment decision
- * rather than something that follows from merely holding a token.
+ * Corrections are off unless explicitly enabled. A correction rewrites a
+ * canonical inspection row, so the ability to make one is a deployment
+ * decision rather than something that follows from merely holding a token.
  */
-export function writesEnabled() {
-  return trimmed("MASTER_WRITES_ENABLED") === "true";
+export function correctionsEnabled() {
+  return trimmed("CORRECTIONS_ENABLED") === "true";
+}
+
+/**
+ * The inspection app's origin, safe to hand to the browser: photos are served
+ * from it by signed id (`/api/photo?id=...`), which is a capability in itself
+ * and needs no header, so the image can load directly instead of being
+ * proxied through this function.
+ */
+export function inspectionBase() {
+  return inspectionApiConfig()?.base;
+}
+
+/**
+ * Link target for the inspection app's own admin grid (기준정보). The console
+ * links out to it instead of rebuilding it.
+ */
+export function adminGridUrl() {
+  const config = inspectionApiConfig();
+  return config ? `${config.base}/?view=admin-grid` : undefined;
 }
