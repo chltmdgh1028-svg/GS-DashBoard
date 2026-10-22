@@ -6,50 +6,43 @@
  * list it probably does not need an icon - plain text is the default.
  */
 export {
-  /* Navigation / scope */
-  Globe2 as IconNational,
-  Building2 as IconBusinessUnit,
-  Users as IconTeam,
-  UserRound as IconOfc,
-  Store as IconStore,
-  Package as IconProduct,
-  Target as IconFocus,
-  /* Metrics */
-  TrendingUp as IconSales,
-  TrendingDown as IconSalesDown,
-  Receipt as IconPurchaseCost,
-  CircleDollarSign as IconProfit,
-  Trash2 as IconWaste,
-  CalendarDays as IconPeriod,
-  /* Admin / data pipeline */
-  Database as IconDataManagement,
-  ShieldCheck as IconValidation,
+  /* Console sections */
+  LayoutDashboard as IconOpsBoard,
+  ListChecks as IconExceptionQueue,
+  Warehouse as IconCenter,
+  UserRound as IconInspector,
+  ClipboardCheck as IconInspection,
+
+  /* Inspection concepts */
+  PackageCheck as IconInbound,
+  ScanSearch as IconInspected,
+  TriangleAlert as IconDefect,
+  Undo2 as IconReturn,
+  RefreshCw as IconExchange,
+  Camera as IconPhoto,
+  Boxes as IconSku,
+  Truck as IconSupplier,
+
+  /* Status / feedback */
   TriangleAlert as IconWarning,
   CircleAlert as IconError,
   Info as IconInfo,
-  MonitorCog as IconAgent,
-  FolderOpen as IconFolder,
-  RefreshCw as IconRefresh,
-  CloudUpload as IconPublish,
-  History as IconRevision,
-  Settings as IconSettings,
-  LogOut as IconLogout,
-  FileSpreadsheet as IconFile,
-  /* Generic UI */
-  Search as IconSearch,
-  X as IconClose,
-  Check as IconCheck,
   CircleCheck as IconOk,
-  ChevronRight as IconChevronRight,
-  ChevronDown as IconChevronDown,
+  Clock as IconDue,
+  TimerOff as IconOverdue,
+  Pause as IconHold,
+
+  /* Controls */
   ArrowUp as IconArrowUp,
   ArrowDown as IconArrowDown,
-  ChevronsUpDown as IconSortable,
-  LoaderCircle as IconSpinner,
-  PanelLeft as IconPanel,
-  Inbox as IconEmpty,
-  CircleHelp as IconHelp,
   Minus as IconFlat,
-  ListFilter as IconFilter,
-  LayoutDashboard as IconDashboard,
+  ChevronsUpDown as IconSortable,
+  Search as IconSearch,
+  X as IconClose,
+  CircleHelp as IconHelp,
+  LoaderCircle as IconSpinner,
+  Inbox as IconEmpty,
+  LogOut as IconLogout,
+  CalendarDays as IconDate,
+  RotateCw as IconRefresh,
 } from "lucide-react";

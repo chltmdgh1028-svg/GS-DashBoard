@@ -1,55 +1,102 @@
-# GS Dashboard
+# 검품 운영 콘솔 (Inspection Operations Console)
 
-전단행사 운영 대시보드 프로토타입입니다. ADMIN이 Local Agent로 로컬 폴더의 업무 Excel을 읽어 Campaign Revision을 반영하고, OFC는 중앙 서버에 저장된 Active Snapshot만 조회합니다.
+검품 현장에서 판단할 수 없는 건을 운영이 결정하는 콘솔입니다. 과거 데이터를 분석하는 BI 대시보드가 아니라,
+**지금 조치가 필요한 것**을 보여주고 그 자리에서 처리 결정을 남기는 운영 화면입니다.
 
-## 구조
+## 화면
 
-- Web/Central Server: 로그인, 권한 Scope, Campaign Revision 저장, Dashboard API 제공
-- Local Agent: 관리자 PC의 지정 폴더를 직접 읽고 기존 Excel Parser/KPI/Validation 로직으로 gzip Snapshot 생성
-- ADMIN Browser: Local Agent에서 받은 gzip Snapshot을 현재 로그인 세션으로 중앙 same-origin API에 반영
-- OFC: Excel 원시자료와 Local Agent 없이 중앙 Dashboard API만 조회
+| 화면 | 역할 |
+| --- | --- |
+| 운영 보드 | 운영일 기준 검품률·불량률, 센터별 상태, 기한 초과 예외 알림 |
+| 예외 처리 | 운영 결정이 필요한 건의 작업 큐. 승인 / 반려 / 보류를 메모와 함께 기록 |
+| 센터 | 센터별 검품률을 목표와 비교, 선택 센터 상세 지표 |
+| 검품 담당 | 담당별 처리량과 불량률 |
+| 검품 내역 | 운영일의 검품 건 전체 (판정별 필터, 검색) |
 
-중앙 서버는 관리자 PC의 로컬 폴더 경로를 저장하지 않습니다. 폴더 경로와 마지막 반영 파일 hash는 각 PC의 Local Agent 설정에만 저장됩니다. 회사 Proxy/TLS 정책과 충돌하지 않도록 Agent가 외부 HTTPS 업로드를 직접 수행하지 않고, ADMIN 브라우저가 이미 로그인한 Dashboard 서버로 Snapshot을 전송합니다.
+## 예외 판정 규칙
+
+검품 건에서 아래 조건이 발견되면 예외 항목이 생성됩니다. 한 검품 건이 여러 예외를 만들 수 있습니다.
+서로 다른 담당자가 처리해야 하는 다른 종류의 일이기 때문입니다.
+
+| 유형 | 조건 | 처리 기한 |
+| --- | --- | --- |
+| 불량 긴급 | 불량률 ≥ `CRITICAL_DEFECT_RATE` (기본 15%) | 2시간 |
+| 반품 승인 | 반품 수량 > 0 | 8시간 |
+| 교환 승인 | 교환 수량 > 0 | 8시간 |
+| 검품률 미달 | 검품률 < `INSPECTION_TARGET` (기본 90%) | 4시간 |
+| 증빙 누락 | 불량 판정인데 사진 0장 | 6시간 |
+
+기한이 지나고 아직 처리되지 않은 건은 `기한 초과`가 되고, 해당 센터 상태는 즉시 `조치 필요`로 바뀝니다.
+
+## 권한
+
+- `admin` (본사 운영) — 모든 센터 조회 및 처리
+- `center` (센터 담당) — 본인 센터만 조회 및 처리
+
+센터 범위는 서명된 세션에서만 읽습니다. 쿼리 파라미터로 범위를 넓힐 수 없고, 다른 센터의 예외 ID로
+처리를 시도하면 404로 거부됩니다. 이 두 가지는 `npm test`가 검증합니다.
+
+## 환경 변수
+
+서버는 환경 변수에서만 자격을 읽습니다. **코드에 기본 비밀번호가 없습니다.** 설정되지 않은 배포는
+아무도 로그인시키지 않고 503으로 거부합니다.
+
+| 변수 | 필수 | 설명 |
+| --- | --- | --- |
+| `ADMIN_PASSWORD` | 예 | 본사 운영 계정 비밀번호. 없으면 로그인 불가 |
+| `SESSION_SECRET` | 운영에서 필수 | 세션 쿠키 서명 키. 없으면 부팅 시 임의 생성되어 재시작마다 세션이 끊김 |
+| `ADMIN_ID` | 아니오 | 기본 `admin` |
+| `CENTER_PASSWORD` | 아니오 | 설정하면 센터 담당 로그인 활성화. 아이디는 센터명 |
+| `INSPECTION_TARGET` | 아니오 | 목표 검품률. 기본 `0.9` |
+| `CRITICAL_DEFECT_RATE` | 아니오 | 긴급 승격 불량률. 기본 `0.15` |
+| `DATA_DIR` | 아니오 | 처리 결정 저장 경로. 기본은 로컬 `data/`, Vercel에서는 함수 tmpdir |
+| `PORT` | 아니오 | 자체 호스팅 서버 포트. 기본 `8080` |
+
+## 데이터
+
+현재 검품 피드는 **운영일로 시드된 내장 데이터**입니다. 같은 운영일은 항상 같은 값을 재현하므로 화면과
+집계 검증에 쓸 수 있고, 화면 상단에 시드 데이터임이 표시됩니다.
+
+운영 데이터로 전환하려면 `server/store.ts`의 `loadRecords` 하나만 실제 검품 리포트 API 호출로 바꾸면
+됩니다. 그 위의 집계·예외 판정·권한은 완성된 `InspectionRecord[]`만 받으므로 바뀌지 않습니다.
+
+처리 결정은 `DATA_DIR/decisions.json`에 저장되며 피드가 갱신돼도 유지됩니다. Vercel의 tmpdir은 인스턴스가
+재활용되면 초기화되므로, 결정을 영구 보존해야 하면 `readDecisions`/`writeDecision`을 Postgres나 Vercel KV로
+옮기면 됩니다.
 
 ## 실행
 
 ```powershell
 npm install
-npm run server
+npm run dev
 ```
 
-다른 터미널에서 Local Agent를 실행합니다.
+API까지 포함한 전체 서버는 아래로 실행합니다.
 
 ```powershell
-npm run agent
+$env:ADMIN_PASSWORD="<설정>"
+$env:SESSION_SECRET="<설정>"
+npm start
 ```
 
-기본 Agent 주소는 `http://127.0.0.1:8787`입니다. 기본 입력 폴더는 `C:\GS-Dashboard\Input`입니다. ADMIN 화면의 `[폴더 선택]` 버튼은 Local Agent를 통해 Windows 폴더 선택 창을 열고, 선택 경로를 해당 PC의 Agent 설정에 저장합니다.
-
-Windows 실행파일은 아래 명령으로 생성합니다.
+## 검증
 
 ```powershell
-npm run package:agent
+npm test
 ```
 
-산출물:
+예외 판정 규칙, 집계 산술, 센터 범위 격리, 처리 결정 저장을 검사합니다.
+
+## 배포
+
+Vercel 프로젝트 `gs-dash-board`를 그대로 재사용합니다. `vercel.json`의 rewrite가 모든 `/api/*`를
+`api/index.ts` 하나로 보내고, 그 외 경로는 SPA `index.html`로 보냅니다.
+
+## 이력
+
+이 저장소는 이전에 **GS Dashboard**(전단행사 운영 대시보드)였습니다. 당시 상태는 아래 태그에 보존되어
+있습니다.
 
 ```text
-dist-agent\GS-Dashboard-Agent.exe
-dist-agent\README.txt
+archive/gs-dashboard-2026-10-22
 ```
-
-## 테스트 계정
-
-- ADMIN: `admin / fresh1652`
-- OFC: Campaign 반영 후 조직도 기준 `OFC명 / 부문명` 예: `강혜림 / 1부문`
-
-## 보안 메모
-
-- 브라우저 Excel 첨부 업로드와 붙여넣기 입력 API는 운영 UI/API에서 제거했습니다.
-- Local Agent는 기본적으로 `127.0.0.1`에만 bind합니다.
-- Local Agent는 허용된 GS Dashboard Origin만 CORS로 허용합니다.
-- Campaign 반영은 ADMIN 로그인 세션과 중앙 서버가 발급한 단기 one-time Sync Token이 모두 있어야 가능합니다.
-- 동일 Campaign 재반영은 새 Campaign이 아니라 새 Revision을 만들고 최신 Revision을 Active로 지정합니다.
-- 동일 역할 파일이 여러 개면 Header Signature로 역할을 분류한 뒤 `modifiedAt` 기준 최신 파일을 선택합니다.
-- Revision 생성 여부는 선택된 전체 역할별 파일의 content SHA-256만 비교합니다. 같은 내용의 파일명 또는 수정시각 변경은 `UNCHANGED`로 처리합니다.

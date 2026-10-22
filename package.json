@@ -1,18 +1,15 @@
 {
-  "name": "gs-dashboard",
+  "name": "inspection-operations-console",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "server": "tsx server.ts",
-    "agent": "tsx agent/local-agent.ts",
-    "package:agent": "node scripts/build-agent-package.mjs",
     "start": "npm run build && tsx server.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test:api": "tsx scripts/test-api-routing.ts",
-    "test:gzip": "tsx scripts/test-gzip-sync.ts",
+    "test": "tsx scripts/test-console.ts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -21,8 +18,7 @@
     "pretendard": "^1.3.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "recharts": "^3.10.1",
-    "xlsx": "^0.18.5"
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -30,8 +26,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
-    "@yao-pkg/pkg": "^6.22.0",
-    "esbuild": "^0.28.2",
     "oxlint": "^1.79.0",
     "tsx": "^4.23.13",
     "typescript": "~6.0.2",

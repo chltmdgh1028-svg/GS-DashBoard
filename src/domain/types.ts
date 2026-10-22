@@ -1,277 +1,177 @@
-export type FileRole =
-  | "storeMaster"
-  | "organizationMaster"
-  | "operatingDays"
-  | "currentDaily"
-  | "previousDaily"
-  | "categoryMetrics"
-  | "wasteCost"
-  | "productMetrics"
-  | "focusProducts"
-  | "freshSales"
-  | "target"
-  | "reference"
-  | "unknown";
+/**
+ * Inspection Operations Console - domain model.
+ *
+ * The vocabulary here is deliberately the same as the 검품 (inspection) data
+ * already produced by the field app: a 검품 건 is an `InspectionRecord`, its
+ * outcome is an `InspectionResult`, quantities are 입고/검품/불량/반품/교환.
+ * Reusing those names means a number on this screen and a number in the
+ * inspection report mean the same thing.
+ *
+ * What makes this a *console* rather than a dashboard: every rate is computed
+ * once on the server and carried on the payload, and the things an operator
+ * must act on are first-class (`ExceptionItem`) and carry a decision.
+ */
 
-export type Severity = "error" | "warning" | "info";
-export type QualityCategory =
-  | "actualData"
-  | "masterOrganization"
-  | "coverage"
-  | "configuration"
-  | "displayAlias";
-
-export interface QualityIssue {
-  severity: Severity;
-  category: QualityCategory;
-  title: string;
-  detail: string;
-  entityId?: string;
-}
-
-export interface CategoryGroupConfig {
-  id: "cold" | "fresh" | "other" | string;
-  label: string;
-  codes: string[];
-}
-
-export interface FocusUnitConfig {
-  focusUnitId: string;
-  focusUnitName: string;
-  productCodes: string[];
-  categoryCode?: string;
-  categoryName?: string;
-}
-
-export interface CampaignConfig {
-  campaignId: string;
-  campaignName: string;
-  startDate?: string;
-  endDate?: string;
-  categoryGroups: CategoryGroupConfig[];
-  focusUnits: FocusUnitConfig[];
-  targetByBusinessUnit: Record<string, number>;
-  targetAchievementThreshold: number;
-  focusHandlingThreshold: number;
-  topN: number;
-  storeTypeProfitShare: Record<string, number>;
-  wasteChargeRate: number;
-  wasteSupportRate: number;
-  focusAutoGroupCategories: string[];
-  storeTypeAliases: Record<string, string>;
-}
-
-export interface Store {
-  storeId: string;
-  storeName: string;
-  currentCode: string;
-  initialCode?: string;
-  vStoreCode?: string;
-  aliases: string[];
-  businessUnit?: string;
-  region?: string;
-  team?: string;
-  ofc?: string;
-  storeType?: string;
-  concept?: string;
-  conceptType?: string;
-  conceptStartDate?: string;
-  masterBusinessUnit?: string;
-  masterRegion?: string;
-  masterTeam?: string;
-  masterOfc?: string;
-  masterStoreType?: string;
-}
-
-export interface DailyMetric {
-  campaignId: string;
-  storeId: string;
-  date: string;
-  dayIndex: number;
-  salesAmount?: number;
-  purchaseCost?: number;
-  periodType: "current" | "previous";
-}
-
-export interface CategoryMetric {
-  campaignId: string;
-  storeId: string;
-  categoryCode: string;
-  categoryName: string;
-  salesAmount: number;
-  grossProfit: number;
-}
-
-export interface ProductMetric {
-  campaignId: string;
-  storeId: string;
-  productCode: string;
-  productName: string;
-  categoryCode: string;
-  categoryName: string;
-  inboundQty: number;
-  salesQty: number;
-  salesAmount: number;
-}
-
-export interface FocusStoreMetric {
-  campaignId: string;
-  storeId: string;
-  focusUnitId: string;
-  focusUnitName: string;
-  productCodes: string[];
-  orderQty: number;
-  handled: boolean;
-}
-
-export interface StoreMetric {
-  storeId: string;
-  operatingDays?: number;
-  purchaseCostTotal: number;
-  eventSalesTotal: number;
-  eventDailySales?: number;
-  previousSalesTotal: number;
-  categorySales: Record<string, number>;
-  categoryGrossProfit: Record<string, number>;
-  categoryDailySales: Record<string, number>;
-  categoryProfitRate: Record<string, number | undefined>;
-  productHandlingRate: Record<string, number | undefined>;
-  freshSalesTotal?: number;
-  freshDailySales?: number;
-  eventFreshComposition?: number;
-  targetDailySales?: number;
-  targetAchievementRate?: number;
-  targetAchieved: boolean;
-  targetScore?: number;
-  focusHandledUnits: number;
-  focusTotalUnits: number;
-  focusHandlingRate?: number;
-  focusAchieved: boolean;
-  focusScore?: number;
-  wasteCost?: number;
-  profitShare?: number;
-  estimatedStoreProfit?: number;
-  topProducts: ProductMetric[];
-}
-
-export interface AggregateMetric {
-  key: string;
-  label: string;
-  level: "national" | "businessUnit" | "team" | "ofc";
-  businessUnit?: string;
-  region?: string;
-  team?: string;
-  ofc?: string;
-  storeCount: number;
-  ofcCount: number;
-  operatingDays: number;
-  purchaseCostTotal: number;
-  eventSalesTotal: number;
-  eventDailySales?: number;
-  coldDailySales?: number;
-  freshEventDailySales?: number;
-  otherDailySales?: number;
-  targetAchievedStores: number;
-  focusAchievedStores: number;
-  focusHandlingRate?: number;
-  freshDailySales?: number;
-  eventFreshComposition?: number;
-}
-
-export interface ProductCatalogItem {
-  productCode: string;
-  productName: string;
-  categoryCode: string;
-  categoryName: string;
-}
-
-export interface CampaignDataset {
-  config: CampaignConfig;
-  fileRoles: Record<string, FileRole>;
-  stores: Store[];
-  dailyMetrics: DailyMetric[];
-  categoryMetrics: CategoryMetric[];
-  productMetrics: ProductMetric[];
-  focusMetrics: FocusStoreMetric[];
-  storeMetrics: StoreMetric[];
-  productCatalog: ProductCatalogItem[];
-  focusUnits: FocusUnitConfig[];
-  aggregates: {
-    national: AggregateMetric;
-    businessUnits: AggregateMetric[];
-    teams: AggregateMetric[];
-    ofcs: AggregateMetric[];
-  };
-  issues: QualityIssue[];
-  createdAt: string;
-}
+export type Role = "admin" | "center";
 
 export interface AuthenticatedUser {
-  role: "admin" | "ofc";
+  role: Role;
   userId: string;
   displayName: string;
-  ofc?: string;
+  /** Set for role "center": the only center this user may read. */
+  center?: string;
 }
 
-export interface CampaignListItem {
+/* ------------------------------------------------------------- Inspection */
+
+export type InspectionResult = "normal" | "return" | "exchange" | "defect";
+
+/** Severity levels the shared UI kit renders (ValidationBadge). */
+export type Severity = "info" | "warning" | "error";
+
+export type CenterHealth = "normal" | "warning" | "error";
+
+export interface InspectionRecord {
   id: string;
-  campaignName: string;
-  createdAt: string;
-  updatedAt?: string;
-  activeRevisionId?: string;
-  activeRevisionNumber?: number;
-  revisionCount?: number;
-  storeCount: number;
-  productCount: number;
-  issueCount: number;
+  /** Business date, YYYY-MM-DD. */
+  date: string;
+  /** Local time of the inspection, HH:mm. */
+  time: string;
+  center: string;
+  sku: string;
+  productName: string;
+  category: string;
+  supplier: string;
+  inspector: string;
+  inboundQty: number;
+  inspectionQty: number;
+  defectQty: number;
+  returnQty: number;
+  exchangeQty: number;
+  /** inspectionQty / inboundQty, computed server-side. */
+  inspectionRate: number;
+  /** defectQty / inspectionQty, computed server-side. */
+  defectRate: number;
+  result: InspectionResult;
+  defectReasons: string[];
+  photoCount: number;
 }
 
-export interface StoreDailySeriesPoint {
-  day: string;
-  currentSales?: number;
-  previousSales?: number;
-  purchaseCost?: number;
+/* -------------------------------------------------------------- Exceptions */
+
+/**
+ * The reasons an inspection lands in the operator's queue. Each one is a
+ * condition the field app cannot resolve by itself - it needs a decision from
+ * 본사 운영 or the center lead.
+ */
+export type ExceptionKind =
+  | "defect_critical"
+  | "return_pending"
+  | "exchange_pending"
+  | "inspection_shortfall"
+  | "photo_missing";
+
+export type ExceptionState = "open" | "held" | "resolved" | "dismissed";
+
+export type DecisionAction = "hold" | "approve" | "reject" | "dismiss";
+
+export interface ExceptionDecision {
+  action: DecisionAction;
+  note?: string;
+  decidedBy: string;
+  decidedAt: string;
 }
 
-export interface FocusSummary {
-  focusUnitId: string;
-  focusUnitName: string;
-  categoryName?: string;
-  productCodes: string[];
-  nationalRate?: number;
-  teamRate?: number;
-  ofcRate?: number;
+export interface ExceptionItem {
+  id: string;
+  inspectionId: string;
+  kind: ExceptionKind;
+  severity: Severity;
+  state: ExceptionState;
+  center: string;
+  sku: string;
+  productName: string;
+  supplier: string;
+  inspector: string;
+  /** ISO timestamp the exception was raised. */
+  raisedAt: string;
+  /** ISO timestamp the decision is due. Past due and still open = overdue. */
+  dueAt: string;
+  summary: string;
+  defectRate?: number;
+  qty?: number;
+  decision?: ExceptionDecision;
 }
 
-export interface DashboardDataset {
-  config: Pick<CampaignConfig, "campaignId" | "campaignName" | "topN">;
-  adminConfig?: CampaignConfig;
-  stores: Store[];
-  storeMetrics: StoreMetric[];
-  productCatalog: ProductCatalogItem[];
-  focusUnits: FocusUnitConfig[];
-  focusSummaries: FocusSummary[];
-  dailySeriesByStore: Record<string, StoreDailySeriesPoint[]>;
-  aggregates: {
-    national: AggregateMetric;
-    businessUnits: AggregateMetric[];
-    teams: AggregateMetric[];
-    ofcs: AggregateMetric[];
-  };
-  createdAt: string;
-  permissions: {
-    canUpload: boolean;
-    canManageCampaigns: boolean;
-    canManageConfig: boolean;
-    canViewValidation: boolean;
-    canViewAllStores: boolean;
-  };
-  userScope: {
-    role: "admin" | "ofc";
-    ofc?: string;
-    team?: string;
-    businessUnit?: string;
-  };
-  fileRoles?: Record<string, FileRole>;
-  issues?: QualityIssue[];
+/* ----------------------------------------------------------- Center status */
+
+export interface CenterStatus {
+  center: string;
+  health: CenterHealth;
+  inboundQty: number;
+  inspectionQty: number;
+  inspectionRate: number;
+  /** Operating target for the inspection rate, e.g. 0.9. */
+  inspectionTarget: number;
+  defectQty: number;
+  defectRate: number;
+  openExceptions: number;
+  overdueExceptions: number;
+  inspectorCount: number;
+  lastActivityAt?: string;
+}
+
+/* -------------------------------------------------------------- Overview */
+
+export interface ConsoleTotals {
+  inboundQty: number;
+  inspectionQty: number;
+  inspectionRate: number;
+  inspectionTarget: number;
+  defectQty: number;
+  defectRate: number;
+  returnQty: number;
+  exchangeQty: number;
+  inspectedSkus: number;
+  photoCount: number;
+}
+
+export interface HourlyBucket {
+  /** HH:00 label. */
+  hour: string;
+  inspectionQty: number;
+  defectQty: number;
+}
+
+export interface ConsoleScope {
+  label: string;
+  centers: string[];
+}
+
+export interface ConsoleOverview {
+  /** When the server produced this payload. */
+  asOf: string;
+  businessDate: string;
+  scope: ConsoleScope;
+  totals: ConsoleTotals;
+  openExceptions: number;
+  overdueExceptions: number;
+  criticalExceptions: number;
+  centers: CenterStatus[];
+  hourly: HourlyBucket[];
+  /** True when the payload came from the built-in seed, not a live source. */
+  seeded: boolean;
+}
+
+/* ------------------------------------------------------------ Inspectors */
+
+export interface InspectorLoad {
+  inspector: string;
+  center: string;
+  inspections: number;
+  inspectionQty: number;
+  defectQty: number;
+  defectRate: number;
+  openExceptions: number;
+  lastActivityAt?: string;
 }

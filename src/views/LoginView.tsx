@@ -1,65 +1,57 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import type { AuthenticatedUser } from "../domain/types";
+import { login } from "../api";
 import { Button, Field, Input, Notice } from "../ui";
-import { IconDashboard, IconError } from "../ui/icons";
+import { IconError, IconOpsBoard } from "../ui/icons";
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials: "same-origin", ...init });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
-  return data;
-}
-
-export function LoginView({ onLogin }: { onLogin: (user: AuthenticatedUser) => Promise<void> | void }) {
-  const idField = useId();
-  const passwordField = useId();
+export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser) => void }) {
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
+  const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await login(userId.trim(), password);
+      onSignedIn(result.user);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "로그인에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="login-screen">
-      <form
-        className="login-card"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          setBusy(true);
-          setMessage("");
-          try {
-            const result = await api<{ user: AuthenticatedUser }>("/api/login", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ userId, password }),
-            });
-            await onLogin(result.user);
-          } catch (error) {
-            setMessage(error instanceof Error ? error.message : "로그인에 실패했습니다.");
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
+      <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <span className="mark">
-            <IconDashboard size={20} aria-hidden />
-          </span>
-          <h1>전단행사 운영 대시보드</h1>
-          <p>본사 ADMIN이 Campaign을 반영하고, OFC는 담당 권역 실적만 조회합니다.</p>
+          <IconOpsBoard size={24} aria-hidden />
+          <strong style={{ fontSize: "var(--fs-lg)" }}>검품 운영 콘솔</strong>
+          <span className="muted">Inspection Operations Console</span>
         </div>
 
-        <Field label="아이디" htmlFor={idField}>
+        {error && (
+          <Notice tone="danger" icon={<IconError size={16} aria-hidden />}>
+            {error}
+          </Notice>
+        )}
+
+        <Field label="아이디" htmlFor="login-user">
           <Input
-            id={idField}
+            id="login-user"
             value={userId}
             autoComplete="username"
             autoFocus
             onChange={(event) => setUserId(event.target.value)}
           />
         </Field>
-        <Field label="비밀번호" htmlFor={passwordField}>
+
+        <Field label="비밀번호" htmlFor="login-password" hint="본사 운영 계정 또는 센터 담당 계정으로 로그인합니다.">
           <Input
-            id={passwordField}
+            id="login-password"
             type="password"
             value={password}
             autoComplete="current-password"
@@ -67,13 +59,7 @@ export function LoginView({ onLogin }: { onLogin: (user: AuthenticatedUser) => P
           />
         </Field>
 
-        {message && (
-          <Notice tone="danger" icon={<IconError size={15} aria-hidden />}>
-            <span>{message}</span>
-          </Notice>
-        )}
-
-        <Button type="submit" variant="primary" size="lg" loading={busy} disabled={!userId || !password}>
+        <Button type="submit" variant="primary" size="lg" loading={busy} disabled={!userId.trim() || !password}>
           로그인
         </Button>
       </form>
