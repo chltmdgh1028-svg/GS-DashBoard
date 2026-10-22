@@ -1,177 +1,109 @@
 /**
- * Inspection Operations Console - domain model.
+ * Inspection Master Console - shared types.
  *
- * The vocabulary here is deliberately the same as the 검품 (inspection) data
- * already produced by the field app: a 검품 건 is an `InspectionRecord`, its
- * outcome is an `InspectionResult`, quantities are 입고/검품/불량/반품/교환.
- * Reusing those names means a number on this screen and a number in the
- * inspection report mean the same thing.
- *
- * What makes this a *console* rather than a dashboard: every rate is computed
- * once on the server and carried on the payload, and the things an operator
- * must act on are first-class (`ExceptionItem`) and carry a decision.
+ * These mirror the inspection app's admin-grid contract exactly, because the
+ * console is a second UI over that API rather than its own data model. The
+ * grid is positional: `rows` is an array of rows, each an array of cells in
+ * `columns` order, which is how the app validates and diffs them.
  */
 
-export type Role = "admin" | "center";
+export type Role = "admin";
 
 export interface AuthenticatedUser {
   role: Role;
   userId: string;
   displayName: string;
-  /** Set for role "center": the only center this user may read. */
-  center?: string;
 }
 
-/* ------------------------------------------------------------- Inspection */
+/* --------------------------------------------------------------- Datasets */
 
-export type InspectionResult = "normal" | "return" | "exchange" | "defect";
-
-/** Severity levels the shared UI kit renders (ValidationBadge). */
-export type Severity = "info" | "warning" | "error";
-
-export type CenterHealth = "normal" | "warning" | "error";
-
-export interface InspectionRecord {
-  id: string;
-  /** Business date, YYYY-MM-DD. */
-  date: string;
-  /** Local time of the inspection, HH:mm. */
-  time: string;
-  center: string;
-  sku: string;
-  productName: string;
-  category: string;
-  supplier: string;
-  inspector: string;
-  inboundQty: number;
-  inspectionQty: number;
-  defectQty: number;
-  returnQty: number;
-  exchangeQty: number;
-  /** inspectionQty / inboundQty, computed server-side. */
-  inspectionRate: number;
-  /** defectQty / inspectionQty, computed server-side. */
-  defectRate: number;
-  result: InspectionResult;
-  defectReasons: string[];
-  photoCount: number;
-}
-
-/* -------------------------------------------------------------- Exceptions */
-
-/**
- * The reasons an inspection lands in the operator's queue. Each one is a
- * condition the field app cannot resolve by itself - it needs a decision from
- * 본사 운영 or the center lead.
- */
-export type ExceptionKind =
-  | "defect_critical"
-  | "return_pending"
-  | "exchange_pending"
-  | "inspection_shortfall"
-  | "photo_missing";
-
-export type ExceptionState = "open" | "held" | "resolved" | "dismissed";
-
-export type DecisionAction = "hold" | "approve" | "reject" | "dismiss";
-
-export interface ExceptionDecision {
-  action: DecisionAction;
-  note?: string;
-  decidedBy: string;
-  decidedAt: string;
-}
-
-export interface ExceptionItem {
-  id: string;
-  inspectionId: string;
-  kind: ExceptionKind;
-  severity: Severity;
-  state: ExceptionState;
-  center: string;
-  sku: string;
-  productName: string;
-  supplier: string;
-  inspector: string;
-  /** ISO timestamp the exception was raised. */
-  raisedAt: string;
-  /** ISO timestamp the decision is due. Past due and still open = overdue. */
-  dueAt: string;
-  summary: string;
-  defectRate?: number;
-  qty?: number;
-  decision?: ExceptionDecision;
-}
-
-/* ----------------------------------------------------------- Center status */
-
-export interface CenterStatus {
-  center: string;
-  health: CenterHealth;
-  inboundQty: number;
-  inspectionQty: number;
-  inspectionRate: number;
-  /** Operating target for the inspection rate, e.g. 0.9. */
-  inspectionTarget: number;
-  defectQty: number;
-  defectRate: number;
-  openExceptions: number;
-  overdueExceptions: number;
-  inspectorCount: number;
-  lastActivityAt?: string;
-}
-
-/* -------------------------------------------------------------- Overview */
-
-export interface ConsoleTotals {
-  inboundQty: number;
-  inspectionQty: number;
-  inspectionRate: number;
-  inspectionTarget: number;
-  defectQty: number;
-  defectRate: number;
-  returnQty: number;
-  exchangeQty: number;
-  inspectedSkus: number;
-  photoCount: number;
-}
-
-export interface HourlyBucket {
-  /** HH:00 label. */
-  hour: string;
-  inspectionQty: number;
-  defectQty: number;
-}
-
-export interface ConsoleScope {
+/** The master datasets the inspection app exposes - the Google Sheet tabs. */
+export interface DatasetEntry {
+  name: string;
   label: string;
-  centers: string[];
 }
 
-export interface ConsoleOverview {
-  /** When the server produced this payload. */
-  asOf: string;
-  businessDate: string;
-  scope: ConsoleScope;
-  totals: ConsoleTotals;
-  openExceptions: number;
-  overdueExceptions: number;
-  criticalExceptions: number;
-  centers: CenterStatus[];
-  hourly: HourlyBucket[];
-  /** True when the payload came from the built-in seed, not a live source. */
-  seeded: boolean;
+/* ------------------------------------------------------------------- Grid */
+
+export interface GridColumn {
+  key?: string;
+  label: string;
+  /** The app's inferred cell type: text, code, number, date, … */
+  type: string;
+  readOnly?: boolean;
+  required?: boolean;
+  options?: string[];
 }
 
-/* ------------------------------------------------------------ Inspectors */
+export interface RowMetadata {
+  updatedAt?: string;
+  updatedBy?: string;
+}
 
-export interface InspectorLoad {
-  inspector: string;
-  center: string;
-  inspections: number;
-  inspectionQty: number;
-  defectQty: number;
-  defectRate: number;
-  openExceptions: number;
-  lastActivityAt?: string;
+/** `getAdminGrid`: the current state of one dataset. */
+export interface GridView {
+  dataset: string;
+  label: string;
+  columns: GridColumn[];
+  /** Positional cells, in `columns` order. */
+  rows: string[][];
+  /** CAS token. Echoed on preview and save; a mismatch is a write conflict. */
+  revision: number;
+  /** Hash of the source the view was built from. Also part of the CAS check. */
+  sourceHash: string;
+  rowMetadata?: RowMetadata[];
+  sourceOwner?: string;
+}
+
+export interface CellError {
+  row: number;
+  col: number;
+  message: string;
+}
+
+export interface RowWarning {
+  row: number;
+  message: string;
+}
+
+/** `previewAdminGrid`: what a save would do. Writes nothing. */
+export interface PreviewResult {
+  ok: boolean;
+  rows?: string[][];
+  columns?: GridColumn[];
+  errors: CellError[];
+  warnings?: RowWarning[];
+  /** The app's row-level diff against the current view. */
+  changes?: unknown[];
+  matches?: unknown[];
+}
+
+/** `saveAdminGrid`: the commit receipt. */
+export interface SaveResult {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  pendingWrite?: boolean;
+  retryable?: boolean;
+  nativeAck?: {
+    state: string;
+    operationId: string;
+    payloadHash: string | null;
+    authoritative: boolean;
+  };
+}
+
+export interface HistoryResult {
+  changes: unknown[];
+}
+
+/* ----------------------------------------------------------------- Health */
+
+export interface ConsoleHealth {
+  ok: boolean;
+  adminConfigured: boolean;
+  sessionSecretConfigured: boolean;
+  inspectionApiConfigured: boolean;
+  missingInspectionVars: string[];
+  writesEnabled: boolean;
 }

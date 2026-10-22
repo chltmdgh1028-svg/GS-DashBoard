@@ -1,28 +1,28 @@
 /**
- * Browser-side API client.
- *
- * Always same-origin `/api/*`: the session cookie is httpOnly, so the browser
- * never holds a token and nothing here needs to know how auth works.
+ * Browser-side API client. Always same-origin `/api/*`: the session cookie is
+ * httpOnly and the inspection app's token never leaves our server.
  */
 import type {
   AuthenticatedUser,
-  ConsoleOverview,
-  ConsoleScope,
-  DecisionAction,
-  ExceptionItem,
-  InspectionRecord,
-  InspectorLoad,
+  ConsoleHealth,
+  DatasetEntry,
+  GridView,
+  HistoryResult,
+  PreviewResult,
+  SaveResult,
 } from "./domain/types";
-
-/** An exception as the queue endpoint returns it: overdue is computed server-side. */
-export type QueuedException = ExceptionItem & { overdue: boolean };
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
+  /** Set on a 503: which environment variables are missing. */
+  readonly missing?: string[];
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string, missing?: string[]) {
     super(message);
     this.status = status;
+    this.code = code;
+    this.missing = missing;
   }
 }
 
@@ -33,23 +33,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    // An error body is not guaranteed - a platform-level 502 is plain text.
-    const message = await response
+    const body = await response
       .json()
-      .then((body: { error?: string }) => body.error)
+      .then((parsed: { error?: string; code?: string; missing?: string[] }) => parsed)
       .catch(() => undefined);
-    throw new ApiError(response.status, message ?? `요청이 실패했습니다 (HTTP ${response.status}).`);
+    throw new ApiError(
+      response.status,
+      body?.error ?? `요청이 실패했습니다 (HTTP ${response.status}).`,
+      body?.code,
+      body?.missing,
+    );
   }
 
   return response.json() as Promise<T>;
 }
 
-function withDate(path: string, date?: string) {
-  return date ? `${path}${path.includes("?") ? "&" : "?"}date=${encodeURIComponent(date)}` : path;
+export function fetchHealth() {
+  return request<ConsoleHealth>("/api/health");
 }
 
 export function fetchSession() {
-  return request<{ user: AuthenticatedUser | null; centers: string[] }>("/api/session");
+  return request<{ user: AuthenticatedUser | null; writesEnabled: boolean }>("/api/session");
 }
 
 export function login(userId: string, password: string) {
@@ -63,35 +67,49 @@ export function logout() {
   return request<{ ok: true }>("/api/logout", { method: "POST" });
 }
 
-export function fetchOverview(date?: string) {
-  return request<ConsoleOverview>(withDate("/api/console/overview", date));
+export function fetchDatasets() {
+  return request<{ datasets: DatasetEntry[] }>("/api/master/datasets");
 }
 
-export function fetchExceptions(state: string, date?: string) {
-  return request<{ businessDate: string; scope: ConsoleScope; items: QueuedException[] }>(
-    withDate(`/api/console/exceptions?state=${encodeURIComponent(state)}`, date),
-  );
+export function fetchView(name: string) {
+  return request<{ view: GridView }>(`/api/master/datasets/${encodeURIComponent(name)}`);
 }
 
-/**
- * `date` is required: an exception id only resolves inside its own business
- * date, so a decision on yesterday's queue must say so.
- */
-export function decideException(id: string, action: DecisionAction, date: string, note?: string) {
-  return request<{ item: ExceptionItem }>(`/api/console/exceptions/${encodeURIComponent(id)}/decision`, {
+export function fetchHistory(name: string) {
+  return request<HistoryResult>(`/api/master/datasets/${encodeURIComponent(name)}/history`);
+}
+
+/** The CAS pair every write carries, taken from the view it was based on. */
+export interface GridSubmission {
+  columns: string[];
+  rows: string[][];
+  expectedRevision: number;
+  sourceHash: string;
+}
+
+/** Validate only; the inspection app reports per-cell errors and writes nothing. */
+export function previewGrid(name: string, submission: GridSubmission) {
+  return request<PreviewResult>(`/api/master/datasets/${encodeURIComponent(name)}/preview`, {
     method: "POST",
-    body: JSON.stringify({ action, note, date }),
+    body: JSON.stringify(submission),
   });
 }
 
-export function fetchInspections(date?: string) {
-  return request<{ businessDate: string; scope: ConsoleScope; records: InspectionRecord[] }>(
-    withDate("/api/console/inspections", date),
-  );
+/**
+ * Commit. Reuse the `operationId` from the preview: the write is idempotent
+ * on that id, so a retry confirms the first attempt rather than applying a
+ * second one.
+ */
+export function saveGrid(name: string, submission: GridSubmission, operationId: string) {
+  return request<SaveResult>(`/api/master/datasets/${encodeURIComponent(name)}/save`, {
+    method: "POST",
+    body: JSON.stringify({ ...submission, operationId }),
+  });
 }
 
-export function fetchInspectors(date?: string) {
-  return request<{ businessDate: string; scope: ConsoleScope; inspectors: InspectorLoad[] }>(
-    withDate("/api/console/inspectors", date),
-  );
+export function fetchWriteStatus(operationId: string, payloadHash?: string) {
+  return request<SaveResult>("/api/master/write-status", {
+    method: "POST",
+    body: JSON.stringify({ operationId, payloadHash }),
+  });
 }

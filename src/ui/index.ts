@@ -1,9 +1,6 @@
 /** Shared UI kit. Screens import from here, never from the individual files. */
-export { Badge, Delta, ExceptionStateBadge, HealthBadge, StatusDot, ValidationBadge } from "./Badge";
+export { Badge, StatusDot } from "./Badge";
 export type { Tone } from "./Badge";
-export { DataTable, MeterCell, TextCell } from "./DataTable";
-export type { Column, DataTableProps } from "./DataTable";
-export { KpiCard, KpiRow } from "./KpiCard";
 export { ConfirmDialog } from "./Modal";
 export {
   DefinitionList,

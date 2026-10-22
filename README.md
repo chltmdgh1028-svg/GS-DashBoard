@@ -1,68 +1,64 @@
-# 검품 운영 콘솔 (Inspection Operations Console)
+# 검품 마스터 콘솔 (Inspection Master Console)
 
-검품 현장에서 판단할 수 없는 건을 운영이 결정하는 콘솔입니다. 과거 데이터를 분석하는 BI 대시보드가 아니라,
-**지금 조치가 필요한 것**을 보여주고 그 자리에서 처리 결정을 남기는 운영 화면입니다.
+검품 운영 기준정보를 조회하고 수정하는 콘솔입니다. 기존 Google Sheet가 들고 있던 탭들을 그대로 다루며,
+자체 데이터는 보관하지 않습니다.
 
-## 화면
+> **먼저 읽어 주세요.** 이 기능은 `inspection-app-main`에 **이미 존재합니다** (Admin Spreadsheet /
+> admin grid, `api/_lib/app/adminGrid.js`). 이 저장소는 그 API를 호출하는 **두 번째 UI**입니다.
+> 검증 로직을 복제하지 않은 이유는 아래 [설계](#설계) 참고.
 
-| 화면 | 역할 |
+## 데이터셋
+
+검품 앱의 `adminGrid.DATASETS`와 같은 8개입니다.
+
+| key | 이름 |
 | --- | --- |
-| 운영 보드 | 운영일 기준 검품률·불량률, 센터별 상태, 기한 초과 예외 알림 |
-| 예외 처리 | 운영 결정이 필요한 건의 작업 큐. 승인 / 반려 / 보류를 메모와 함께 기록 |
-| 센터 | 센터별 검품률을 목표와 비교, 선택 센터 상세 지표 |
-| 검품 담당 | 담당별 처리량과 불량률 |
-| 검품 내역 | 운영일의 검품 건 전체 (판정별 필터, 검색) |
+| `work_schedule` | 근무표 |
+| `reservation_rows` | 사전예약 |
+| `product_master` | 상품 기준정보 |
+| `partner_category_master` | 파트너 기준정보 |
+| `event_rows` | 행사표 |
+| `mapping_rows` | 협력사 별칭 매핑 |
+| `exclude_rows` | 제외목록 |
+| `inspection_criteria` | 검품 기준 |
 
-## 예외 판정 규칙
+## 설계
 
-검품 건에서 아래 조건이 발견되면 예외 항목이 생성됩니다. 한 검품 건이 여러 예외를 만들 수 있습니다.
-서로 다른 담당자가 처리해야 하는 다른 종류의 일이기 때문입니다.
+이 콘솔은 **Supabase에 직접 접속하지 않습니다.** 모든 읽기/쓰기는 검품 앱의
+`POST {INSPECTION_APP_BASE}/api/admin-grid`를 거칩니다.
 
-| 유형 | 조건 | 처리 기한 |
-| --- | --- | --- |
-| 불량 긴급 | 불량률 ≥ `CRITICAL_DEFECT_RATE` (기본 15%) | 2시간 |
-| 반품 승인 | 반품 수량 > 0 | 8시간 |
-| 교환 승인 | 교환 수량 > 0 | 8시간 |
-| 검품률 미달 | 검품률 < `INSPECTION_TARGET` (기본 90%) | 4시간 |
-| 증빙 누락 | 불량 판정인데 사진 0장 | 6시간 |
+그 이유는 검증 로직 때문입니다. 검품 앱의 `adminGrid.normalize()`는 정규 데이터를 지키는 규칙을 들고
+있습니다 — `inspection_criteria`의 기존 AI 정량 규칙 보존, 중복 규칙 탐지, `사용여부` TRUE/FALSE 정규화,
+상품코드 정규화, 사전예약 발주수량 검사, 근무표 월 헤더 파싱, `수정자`/`수정일시` 서버 각인. 이걸 여기서
+다시 구현해 `app_grid_decide`를 직접 호출하면, 한 군데라도 다른 순간 마스터 데이터가 조용히 깨집니다.
+그래서 **쓰기 주체는 검품 앱 하나로 유지**합니다.
 
-기한이 지나고 아직 처리되지 않은 건은 `기한 초과`가 되고, 해당 센터 상태는 즉시 `조치 필요`로 바뀝니다.
+호출은 서버 간 통신입니다. 브라우저는 same-origin `/api/*`만 부르고, 검품 앱 세션 토큰은 서버 밖으로
+나가지 않습니다. `Origin` 헤더가 없으므로 검품 앱의 origin allowlist에 이 콘솔을 추가할 필요도 없습니다.
+요청에는 `clientPlatform: "service"`와 `caller: "inspection-master-console"`를 붙여, 최소 클라이언트
+버전 게이트가 이를 구버전 앱으로 오인하지 않게 합니다 (Inspection Dashboard와 같은 방식).
 
-## 권한
+## 저장 흐름
 
-- `admin` (본사 운영) — 모든 센터 조회 및 처리
-- `center` (센터 담당) — 본인 센터만 조회 및 처리
+1. **검토** — `previewAdminGrid`. 아무것도 쓰지 않고 셀 단위 오류·경고·변경 건수만 받습니다.
+2. **저장** — `saveAdminGrid`. 검토할 때 쓴 `revision` + `sourceHash`를 그대로 보냅니다.
 
-센터 범위는 서명된 세션에서만 읽습니다. 쿼리 파라미터로 범위를 넓힐 수 없고, 다른 센터의 예외 ID로
-처리를 시도하면 404로 거부됩니다. 이 두 가지는 `npm test`가 검증합니다.
+그 사이 다른 사람이 수정했다면 `NATIVE_WRITE_CONFLICT`로 거부되고 아무것도 쓰이지 않습니다.
+`operationId`는 멱등 키라서, 응답이 유실돼 재시도해도 두 번 저장되지 않습니다.
 
 ## 환경 변수
 
-서버는 환경 변수에서만 자격을 읽습니다. **코드에 기본 비밀번호가 없습니다.** 설정되지 않은 배포는
-아무도 로그인시키지 않고 503으로 거부합니다.
-
 | 변수 | 필수 | 설명 |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | 예 | 본사 운영 계정 비밀번호. 없으면 로그인 불가 |
-| `SESSION_SECRET` | 운영에서 필수 | 세션 쿠키 서명 키. 없으면 부팅 시 임의 생성되어 재시작마다 세션이 끊김 |
+| `ADMIN_PASSWORD` | 예 | 콘솔 로그인 비밀번호. 없으면 503으로 로그인 거부 |
+| `SESSION_SECRET` | 운영에서 필수 | 세션 쿠키 서명 키. 없으면 부팅 시 임의 생성 |
+| `INSPECTION_APP_BASE` | 예 | 검품 앱 origin. 예: `https://inspection-app-main.vercel.app` |
+| `INSPECTION_SESSION_TOKEN` | 예 | 검품 앱이 발급한 세션 토큰. 권한은 검품 앱이 이 토큰으로 판단 |
+| `MASTER_WRITES_ENABLED` | 아니오 | `true`일 때만 수정 가능. 기본은 읽기 전용 |
 | `ADMIN_ID` | 아니오 | 기본 `admin` |
-| `CENTER_PASSWORD` | 아니오 | 설정하면 센터 담당 로그인 활성화. 아이디는 센터명 |
-| `INSPECTION_TARGET` | 아니오 | 목표 검품률. 기본 `0.9` |
-| `CRITICAL_DEFECT_RATE` | 아니오 | 긴급 승격 불량률. 기본 `0.15` |
-| `DATA_DIR` | 아니오 | 처리 결정 저장 경로. 기본은 로컬 `data/`, Vercel에서는 함수 tmpdir |
-| `PORT` | 아니오 | 자체 호스팅 서버 포트. 기본 `8080` |
+| `INSPECTION_TIMEOUT_MS` | 아니오 | 기본 30000 |
 
-## 데이터
-
-현재 검품 피드는 **운영일로 시드된 내장 데이터**입니다. 같은 운영일은 항상 같은 값을 재현하므로 화면과
-집계 검증에 쓸 수 있고, 화면 상단에 시드 데이터임이 표시됩니다.
-
-운영 데이터로 전환하려면 `server/store.ts`의 `loadRecords` 하나만 실제 검품 리포트 API 호출로 바꾸면
-됩니다. 그 위의 집계·예외 판정·권한은 완성된 `InspectionRecord[]`만 받으므로 바뀌지 않습니다.
-
-처리 결정은 `DATA_DIR/decisions.json`에 저장되며 피드가 갱신돼도 유지됩니다. Vercel의 tmpdir은 인스턴스가
-재활용되면 초기화되므로, 결정을 영구 보존해야 하면 `readDecisions`/`writeDecision`을 Postgres나 Vercel KV로
-옮기면 됩니다.
+연결 변수가 없으면 콘솔은 **데이터를 지어내지 않고 503**으로 응답하고 화면에 누락 변수를 표시합니다.
 
 ## 실행
 
@@ -71,31 +67,24 @@ npm install
 npm run dev
 ```
 
-API까지 포함한 전체 서버는 아래로 실행합니다.
-
-```powershell
-$env:ADMIN_PASSWORD="<설정>"
-$env:SESSION_SECRET="<설정>"
-npm start
-```
-
 ## 검증
 
 ```powershell
 npm test
 ```
 
-예외 판정 규칙, 집계 산술, 센터 범위 격리, 처리 결정 저장을 검사합니다.
+검품 앱 프로토콜을 흉내 내는 stub을 띄워서 확인합니다. 운영 데이터에 접속하지 않습니다.
+확인 항목: CAS(`revision`+`sourceHash`) 전달, 잘못된 CAS 거부, 데이터셋 allowlist, `operationId` 멱등 전달,
+`nativeWrite` 형식, service caller 표기, 쓰기 게이트, 오류 코드 → HTTP 상태 매핑, 미설정 시 503.
 
 ## 배포
 
-Vercel 프로젝트 `gs-dash-board`를 그대로 재사용합니다. `vercel.json`의 rewrite가 모든 `/api/*`를
-`api/index.ts` 하나로 보내고, 그 외 경로는 SPA `index.html`로 보냅니다.
+Vercel 프로젝트 `gs-dash-board`를 재사용합니다. Vercel Authentication(SSO)이 `all`로 켜져 있어
+외부에서는 접근할 수 없습니다.
 
 ## 이력
 
-이 저장소는 이전에 **GS Dashboard**(전단행사 운영 대시보드)였습니다. 당시 상태는 아래 태그에 보존되어
-있습니다.
+이 저장소는 이전에 **GS Dashboard**(전단행사 운영 대시보드)였습니다. 당시 상태는 태그에 보존되어 있습니다.
 
 ```text
 archive/gs-dashboard-2026-10-22

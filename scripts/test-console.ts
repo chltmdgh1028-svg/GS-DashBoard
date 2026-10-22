@@ -1,210 +1,270 @@
 /**
  * Self-check for the console's non-trivial logic.
  *
- * Covers the three things that would be silently wrong rather than loudly
- * broken: the exception derivation rules, the aggregation arithmetic, and the
- * scope enforcement that stops one center reading or deciding another's work.
+ * It runs against a stub that speaks the inspection app's admin-grid
+ * protocol, never against production: the point is to prove this console
+ * sends what that API expects and refuses what it should refuse, not to
+ * exercise someone else's live master data.
  *
- * Run with `npm test`. No framework on purpose - assert and exit code.
+ * What is checked is what would be silently wrong rather than loudly broken:
+ * the CAS pair reaching the app unaltered, the write gate, the dataset
+ * allowlist, idempotent operation ids, the service-caller marking that keeps
+ * the client-version gate from rejecting us, and error-code mapping.
+ *
+ * Run with `npm test`.
  */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import http from "node:http";
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "console-test-"));
-process.env.DATA_DIR = dataDir;
+/* ------------------------------------------------- stub inspection app */
+
+interface Received {
+  action: string;
+  body: Record<string, unknown>;
+}
+
+const received: Received[] = [];
+/** Set to make the stub answer a business failure for the next call. */
+let failWith: { error: string; message?: string } | undefined;
+
+const VIEW = {
+  ok: true,
+  dataset: "event_rows",
+  label: "행사표",
+  columns: [
+    { key: "상품코드", label: "상품코드", type: "text", readOnly: false },
+    { key: "행사명", label: "행사명", type: "text", readOnly: false },
+    { key: "수정자", label: "수정자", type: "text", readOnly: true },
+  ],
+  rows: [
+    ["8800001", "가을 행사", "kim"],
+    ["8800002", "겨울 행사", "lee"],
+  ],
+  revision: 42,
+  sourceHash: "hash-42",
+  sourceOwner: "supabase",
+};
+
+const stub = http.createServer((req, res) => {
+  let raw = "";
+  req.on("data", (chunk) => (raw += chunk));
+  req.on("end", () => {
+    const body = JSON.parse(raw || "{}") as Record<string, unknown>;
+    received.push({ action: String(body.action), body });
+
+    const send = (payload: unknown) => {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(payload));
+    };
+
+    if (failWith) {
+      const failure = failWith;
+      failWith = undefined;
+      return send({ ok: false, ...failure });
+    }
+
+    if (body.action === "getAdminGrid") return send(VIEW);
+    if (body.action === "previewAdminGrid") return send({ ok: true, errors: [], changes: [{ row: 0 }] });
+    if (body.action === "saveAdminGrid") {
+      return send({ ok: true, nativeAck: { version: 1, backend: "supabase", state: "COMMITTED", authoritative: true } });
+    }
+    if (body.action === "getAdminGridHistory") return send({ ok: true, changes: [] });
+    return send({ ok: false, error: "GRID_ACTION_INVALID" });
+  });
+});
+
+await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+const stubAddress = stub.address();
+if (!stubAddress || typeof stubAddress === "string") throw new Error("stub did not bind");
+
+process.env.INSPECTION_APP_BASE = `http://127.0.0.1:${stubAddress.port}`;
+process.env.INSPECTION_SESSION_TOKEN = "stub-session-token";
 process.env.ADMIN_ID = "ops";
 process.env.ADMIN_PASSWORD = "test-admin-password";
-process.env.CENTER_PASSWORD = "test-center-password";
 process.env.SESSION_SECRET = "test-session-secret";
+process.env.MASTER_WRITES_ENABLED = "true";
 
 const { createApp } = await import("../server/app.js");
-const store = await import("../server/store.js");
-
-const BUSINESS_DATE = "2026-10-21";
-
-/* ------------------------------------------------- derivation + aggregation */
-
-const { records } = store.loadRecords(BUSINESS_DATE);
-assert.ok(records.length > 0, "seed must produce records");
-
-// Deterministic: the same business date must yield the same feed, or two
-// operators comparing screens would see different numbers.
-assert.deepEqual(
-  store.loadRecords(BUSINESS_DATE).records,
-  records,
-  "feed for a given business date must be reproducible",
-);
-assert.notDeepEqual(
-  store.loadRecords("2026-10-20").records,
-  records,
-  "a different business date must yield a different feed",
-);
-
-for (const record of records) {
-  assert.ok(record.inspectionQty <= record.inboundQty, `${record.id}: 검품 수량이 입고 수량을 초과`);
-  assert.ok(record.defectQty <= record.inspectionQty, `${record.id}: 불량 수량이 검품 수량을 초과`);
-  assert.ok(
-    record.returnQty + record.exchangeQty <= record.defectQty,
-    `${record.id}: 반품+교환이 불량 수량을 초과`,
-  );
-  assert.ok(Math.abs(record.inspectionRate - record.inspectionQty / record.inboundQty) < 1e-9);
-}
-
-const exceptions = store.deriveExceptions(records);
-
-// Every rule in deriveExceptions must be reachable by the seed, otherwise the
-// queue silently stops surfacing a whole class of problem.
-for (const kind of [
-  "defect_critical",
-  "return_pending",
-  "exchange_pending",
-  "inspection_shortfall",
-  "photo_missing",
-] as const) {
-  assert.ok(
-    exceptions.some((item) => item.kind === kind),
-    `seed must exercise the ${kind} rule`,
-  );
-}
-
-// A shortfall is raised exactly when the rate is under target.
-const shortfallIds = new Set(
-  exceptions.filter((item) => item.kind === "inspection_shortfall").map((item) => item.inspectionId),
-);
-for (const record of records) {
-  assert.equal(
-    shortfallIds.has(record.id),
-    record.inspectionRate < store.INSPECTION_TARGET,
-    `${record.id}: 검품률 미달 판정이 목표와 불일치`,
-  );
-}
-
-// Totals must equal the row-wise sums, and a rate must never be derived from
-// an already-rounded rate.
-const totals = store.totalsFor(records);
-assert.equal(totals.inboundQty, records.reduce((sum, row) => sum + row.inboundQty, 0));
-assert.equal(totals.inspectionQty, records.reduce((sum, row) => sum + row.inspectionQty, 0));
-assert.ok(Math.abs(totals.inspectionRate - totals.inspectionQty / totals.inboundQty) < 1e-9);
-assert.ok(Math.abs(totals.defectRate - totals.defectQty / totals.inspectionQty) < 1e-9);
-
-const hourly = store.hourlyFor(records);
-assert.equal(
-  hourly.reduce((sum, bucket) => sum + bucket.inspectionQty, 0),
-  totals.inspectionQty,
-  "시간대별 합계가 전체 검품 수량과 불일치",
-);
-
-/* -------------------------------------------------------------- HTTP: scope */
 
 const app = createApp();
-const server = app.listen(0);
+const server = app.listen(0, "127.0.0.1");
 await new Promise((resolve) => server.once("listening", resolve));
 const address = server.address();
-if (!address || typeof address === "string") throw new Error("server did not bind a port");
+if (!address || typeof address === "string") throw new Error("server did not bind");
 const base = `http://127.0.0.1:${address.port}`;
 
-async function login(userId: string, password: string) {
-  const response = await fetch(`${base}/api/login`, {
+const json = (response: Response) => response.json() as Promise<Record<string, unknown>>;
+
+async function post(path: string, body: unknown, cookie = "") {
+  return fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, password }),
+    headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
   });
-  return { response, cookie: response.headers.get("set-cookie")?.split(";")[0] ?? "" };
 }
 
 try {
-  // The published default password must not be accepted any more.
-  const legacy = await login("admin", "fresh1652");
-  assert.equal(legacy.response.status, 401, "legacy default credentials must be rejected");
+  /* ------------------------------------------------------------- auth */
 
-  const anonymous = await fetch(`${base}/api/console/overview`);
+  const legacy = await post("/api/login", { userId: "admin", password: "fresh1652" });
+  assert.equal(legacy.status, 401, "legacy default credentials must be rejected");
+
+  const anonymous = await fetch(`${base}/api/master/datasets/event_rows`);
   assert.equal(anonymous.status, 401, "unauthenticated reads must be refused");
 
-  const admin = await login("ops", "test-admin-password");
-  assert.equal(admin.response.status, 200, "admin login must succeed");
+  const signIn = await post("/api/login", { userId: "ops", password: "test-admin-password" });
+  assert.equal(signIn.status, 200, "admin login must succeed");
+  const cookie = signIn.headers.get("set-cookie")?.split(";")[0] ?? "";
+  assert.ok(cookie, "login must set a session cookie");
 
-  const centerName = store.ALL_CENTERS[0];
-  const otherCenter = store.ALL_CENTERS[1];
-  const center = await login(centerName, "test-center-password");
-  assert.equal(center.response.status, 200, "center login must succeed");
+  /* ------------------------------------------------------------- reads */
 
-  const adminOverview = await fetch(`${base}/api/console/overview?date=${BUSINESS_DATE}`, {
-    headers: { cookie: admin.cookie },
-  }).then((response) => response.json());
-  assert.equal(adminOverview.centers.length, store.ALL_CENTERS.length, "admin must see every center");
+  const datasets = await fetch(`${base}/api/master/datasets`, { headers: { cookie } }).then(json);
+  assert.equal((datasets.datasets as unknown[]).length, 8, "all eight master datasets must be listed");
 
-  const centerOverview = await fetch(`${base}/api/console/overview?date=${BUSINESS_DATE}`, {
-    headers: { cookie: center.cookie },
-  }).then((response) => response.json());
+  const unknown = await fetch(`${base}/api/master/datasets/not_a_dataset`, { headers: { cookie } });
+  assert.equal(unknown.status, 404, "an unknown dataset must be refused before reaching the app");
+  assert.ok(
+    !received.some((entry) => (entry.body.payload as { dataset?: string })?.dataset === "not_a_dataset"),
+    "an unknown dataset must never be forwarded",
+  );
+
+  const viewResponse = await fetch(`${base}/api/master/datasets/event_rows`, { headers: { cookie } }).then(json);
+  const view = viewResponse.view as typeof VIEW;
+  assert.equal(view.revision, 42);
+  assert.equal(view.sourceHash, "hash-42");
+
+  // Every call must mark itself as a service integration, or the inspection
+  // app's minimum-client-version gate answers CLIENT_UPDATE_REQUIRED.
+  const readCall = received.find((entry) => entry.action === "getAdminGrid");
+  assert.equal(readCall?.body.clientPlatform, "service", "calls must declare clientPlatform service");
+  assert.equal(readCall?.body.caller, "inspection-master-console", "calls must declare a caller");
+  assert.equal(readCall?.body.sessionToken, "stub-session-token", "the session token must be attached server-side");
+
+  /* ------------------------------------------------------------ writes */
+
+  const submission = {
+    columns: view.columns.map((column) => column.label),
+    rows: [
+      ["8800001", "가을 행사 수정", "kim"],
+      ["8800002", "겨울 행사", "lee"],
+    ],
+    expectedRevision: view.revision,
+    sourceHash: view.sourceHash,
+  };
+
+  const preview = await post("/api/master/datasets/event_rows/preview", submission, cookie);
+  assert.equal(preview.status, 200, "preview must succeed");
+  const previewCall = received.findLast((entry) => entry.action === "previewAdminGrid");
+  const previewPayload = previewCall?.body.payload as Record<string, unknown>;
+  assert.equal(previewPayload.expectedRevision, 42, "preview must carry the CAS revision");
+  assert.equal(previewPayload.sourceHash, "hash-42", "preview must carry the CAS source hash");
+
+  // A missing or malformed CAS pair must be refused here: the far side would
+  // throw NATIVE_WRITE_INVALID, which is a much less useful message.
+  for (const bad of [
+    { ...submission, expectedRevision: undefined },
+    { ...submission, expectedRevision: -1 },
+    { ...submission, expectedRevision: 1.5 },
+    { ...submission, sourceHash: "" },
+  ]) {
+    const response = await post("/api/master/datasets/event_rows/preview", bad, cookie);
+    assert.equal(response.status, 400, `malformed CAS must be refused: ${JSON.stringify(bad.expectedRevision)}`);
+  }
+
+  const noOperation = await post("/api/master/datasets/event_rows/save", submission, cookie);
+  assert.equal(noOperation.status, 400, "a save without an operationId must be refused");
+
+  const operationId = "op-0001";
+  const saved = await post(
+    "/api/master/datasets/event_rows/save",
+    { ...submission, operationId },
+    cookie,
+  );
+  assert.equal(saved.status, 200, "save must succeed");
+
+  const saveCall = received.findLast((entry) => entry.action === "saveAdminGrid");
+  assert.equal(saveCall?.body.operationId, operationId, "the operation id must reach the app unchanged");
+  const nativeWrite = saveCall?.body.nativeWrite as Record<string, unknown>;
   assert.deepEqual(
-    centerOverview.centers.map((row: { center: string }) => row.center),
-    [centerName],
-    "center user must see only their own center",
+    nativeWrite,
+    { version: 1, backend: "supabase", expectedRevision: 42 },
+    "nativeWrite must match what identity() requires",
+  );
+  assert.equal(
+    (saveCall?.body.payload as Record<string, unknown>).expectedRevision,
+    nativeWrite.expectedRevision,
+    "payload and nativeWrite revisions must agree, or the app rejects the write",
   );
 
-  // A center user must not be able to widen scope through the URL.
-  const centerInspections = await fetch(`${base}/api/console/inspections?date=${BUSINESS_DATE}`, {
-    headers: { cookie: center.cookie },
-  }).then((response) => response.json());
-  assert.ok(
-    centerInspections.records.every((row: { center: string }) => row.center === centerName),
-    "center user must not receive another center's records",
-  );
+  /* ------------------------------------------------------- error mapping */
 
-  /* ----------------------------------------------------------- HTTP: decide */
+  failWith = { error: "NATIVE_WRITE_CONFLICT", message: "원본 revision이 다릅니다." };
+  const conflict = await post("/api/master/datasets/event_rows/save", { ...submission, operationId }, cookie);
+  assert.equal(conflict.status, 409, "a write conflict must surface as 409, not 200");
 
-  const adminQueue = await fetch(`${base}/api/console/exceptions?state=pending&date=${BUSINESS_DATE}`, {
-    headers: { cookie: admin.cookie },
-  }).then((response) => response.json());
-  assert.ok(adminQueue.items.length > 0, "pending queue must not be empty for the seed");
+  failWith = { error: "GRID_DATASET_TOO_LARGE" };
+  const tooLarge = await fetch(`${base}/api/master/datasets/product_master`, { headers: { cookie } });
+  assert.equal(tooLarge.status, 413, "GRID_DATASET_TOO_LARGE must surface as 413");
 
-  const foreign = adminQueue.items.find((item: { center: string }) => item.center === otherCenter);
-  assert.ok(foreign, "seed must contain an exception outside the center user's scope");
+  /* --------------------------------------------------------- write gate */
 
-  // Deciding out of scope must 404, not succeed and not 500.
-  const crossScope = await fetch(`${base}/api/console/exceptions/${encodeURIComponent(foreign.id)}/decision`, {
+  process.env.MASTER_WRITES_ENABLED = "false";
+  const readOnlyApp = createApp();
+  const readOnlyServer = readOnlyApp.listen(0, "127.0.0.1");
+  await new Promise((resolve) => readOnlyServer.once("listening", resolve));
+  const readOnlyAddress = readOnlyServer.address();
+  if (!readOnlyAddress || typeof readOnlyAddress === "string") throw new Error("no port");
+
+  const readOnlyLogin = await fetch(`http://127.0.0.1:${readOnlyAddress.port}/api/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", cookie: center.cookie },
-    body: JSON.stringify({ action: "approve", date: BUSINESS_DATE }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId: "ops", password: "test-admin-password" }),
   });
-  assert.equal(crossScope.status, 404, "center user must not decide another center's exception");
+  const readOnlyCookie = readOnlyLogin.headers.get("set-cookie")?.split(";")[0] ?? "";
 
-  const badAction = await fetch(`${base}/api/console/exceptions/${encodeURIComponent(foreign.id)}/decision`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", cookie: admin.cookie },
-    body: JSON.stringify({ action: "obliterate", date: BUSINESS_DATE }),
-  });
-  assert.equal(badAction.status, 400, "unknown decision action must be rejected");
-
-  const decided = await fetch(`${base}/api/console/exceptions/${encodeURIComponent(foreign.id)}/decision`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", cookie: admin.cookie },
-    body: JSON.stringify({ action: "approve", note: "검수 확인", date: BUSINESS_DATE }),
-  });
-  assert.equal(decided.status, 200, "admin decision must succeed");
-
-  // The decision must survive a re-read: that is the whole point of persisting it.
-  const afterQueue = await fetch(`${base}/api/console/exceptions?state=all&date=${BUSINESS_DATE}`, {
-    headers: { cookie: admin.cookie },
-  }).then((response) => response.json());
-  const persisted = afterQueue.items.find((item: { id: string }) => item.id === foreign.id);
-  assert.equal(persisted.state, "resolved", "decided exception must read back as resolved");
-  assert.equal(persisted.decision.note, "검수 확인");
-
-  const pendingAfter = await fetch(`${base}/api/console/exceptions?state=pending&date=${BUSINESS_DATE}`, {
-    headers: { cookie: admin.cookie },
-  }).then((response) => response.json());
-  assert.ok(
-    !pendingAfter.items.some((item: { id: string }) => item.id === foreign.id),
-    "a resolved exception must leave the pending queue",
+  const before = received.length;
+  const blocked = await fetch(
+    `http://127.0.0.1:${readOnlyAddress.port}/api/master/datasets/event_rows/save`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", cookie: readOnlyCookie },
+      body: JSON.stringify({ ...submission, operationId: "op-0002" }),
+    },
   );
+  assert.equal(blocked.status, 403, "writes must be refused when MASTER_WRITES_ENABLED is not true");
+  assert.equal(received.length, before, "a blocked write must never reach the inspection app");
+  readOnlyServer.close();
 
-  console.log(
-    `OK  records=${records.length} exceptions=${exceptions.length} centers=${store.ALL_CENTERS.length}`,
+  /* ------------------------------------------------------ not configured */
+
+  delete process.env.INSPECTION_APP_BASE;
+  const unconfiguredApp = createApp();
+  const unconfiguredServer = unconfiguredApp.listen(0, "127.0.0.1");
+  await new Promise((resolve) => unconfiguredServer.once("listening", resolve));
+  const unconfiguredAddress = unconfiguredServer.address();
+  if (!unconfiguredAddress || typeof unconfiguredAddress === "string") throw new Error("no port");
+
+  const health = await fetch(`http://127.0.0.1:${unconfiguredAddress.port}/api/health`).then(json);
+  assert.equal(health.inspectionApiConfigured, false, "health must report the missing connection");
+  assert.deepEqual(health.missingInspectionVars, ["INSPECTION_APP_BASE"]);
+
+  const unconfiguredLogin = await fetch(`http://127.0.0.1:${unconfiguredAddress.port}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId: "ops", password: "test-admin-password" }),
+  });
+  const unconfiguredCookie = unconfiguredLogin.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const unconfiguredRead = await fetch(
+    `http://127.0.0.1:${unconfiguredAddress.port}/api/master/datasets/event_rows`,
+    { headers: { cookie: unconfiguredCookie } },
   );
+  assert.equal(unconfiguredRead.status, 503, "an unconfigured console must report 503, never fabricate data");
+  unconfiguredServer.close();
+
+  console.log(`OK  datasets=8 stubCalls=${received.length}`);
 } finally {
   server.close();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  stub.close();
 }

@@ -1,44 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AuthenticatedUser } from "./domain/types";
-import { fetchSession, logout } from "./api";
-import { Button, ToastProvider } from "./ui";
-import {
-  IconCenter,
-  IconDate,
-  IconExceptionQueue,
-  IconInspection,
-  IconInspector,
-  IconLogout,
-  IconOpsBoard,
-  IconSpinner,
-} from "./ui/icons";
+import type { AuthenticatedUser, DatasetEntry } from "./domain/types";
+import { fetchDatasets, fetchHealth, fetchSession, logout } from "./api";
+import { useResource } from "./useResource";
+import { Badge, Button, Notice, ToastProvider } from "./ui";
+import { IconError, IconLogout, IconMaster, IconSpinner, IconUser, IconWarning } from "./ui/icons";
 import { LoginView } from "./views/LoginView";
-import { OpsBoardView } from "./views/OpsBoardView";
-import { ExceptionQueueView } from "./views/ExceptionQueueView";
-import { CentersView } from "./views/CentersView";
-import { InspectorsView } from "./views/InspectorsView";
-import { InspectionsView } from "./views/InspectionsView";
-import { currentBusinessDate } from "./businessDate";
-
-type SectionId = "board" | "queue" | "centers" | "inspectors" | "inspections";
-
-const SECTIONS: { id: SectionId; label: string; Icon: typeof IconOpsBoard; group: string }[] = [
-  { id: "board", label: "운영 보드", Icon: IconOpsBoard, group: "현황" },
-  { id: "queue", label: "예외 처리", Icon: IconExceptionQueue, group: "현황" },
-  { id: "centers", label: "센터", Icon: IconCenter, group: "상세" },
-  { id: "inspectors", label: "검품 담당", Icon: IconInspector, group: "상세" },
-  { id: "inspections", label: "검품 내역", Icon: IconInspection, group: "상세" },
-];
+import { MasterConsoleView, NoDatasetSelected } from "./views/MasterConsoleView";
 
 export default function App() {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [writesEnabled, setWritesEnabled] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [section, setSection] = useState<SectionId>("board");
-  const [date, setDate] = useState(currentBusinessDate());
+  const [selected, setSelected] = useState<string>();
 
   useEffect(() => {
     fetchSession()
-      .then((result) => setUser(result.user))
+      .then((result) => {
+        setUser(result.user);
+        setWritesEnabled(result.writesEnabled);
+      })
       .catch(() => setUser(null))
       .finally(() => setChecking(false));
   }, []);
@@ -46,7 +26,7 @@ export default function App() {
   const handleLogout = useCallback(async () => {
     await logout().catch(() => undefined);
     setUser(null);
-    setSection("board");
+    setSelected(undefined);
   }, []);
 
   if (checking) {
@@ -57,87 +37,137 @@ export default function App() {
     );
   }
 
-  if (!user) return <LoginView onSignedIn={setUser} />;
-
-  const groups = [...new Set(SECTIONS.map((item) => item.group))];
+  if (!user) {
+    return (
+      <LoginView
+        onSignedIn={(signedIn) => {
+          setUser(signedIn);
+          fetchSession()
+            .then((result) => setWritesEnabled(result.writesEnabled))
+            .catch(() => undefined);
+        }}
+      />
+    );
+  }
 
   return (
     <ToastProvider>
-      <div className="app-shell">
-        <aside className="sidebar">
-          <div className="sidebar-brand">
-            <IconOpsBoard size={18} aria-hidden />
-            <strong>검품 운영 콘솔</strong>
-          </div>
-
-          <nav className="sidebar-nav" aria-label="주요 영역">
-            {groups.map((group) => (
-              <div key={group} style={{ display: "contents" }}>
-                <div className="sidebar-section">{group}</div>
-                {SECTIONS.filter((item) => item.group === group).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="sidebar-link"
-                    aria-current={section === item.id ? "page" : undefined}
-                    onClick={() => setSection(item.id)}
-                  >
-                    <item.Icon size={16} aria-hidden />
-                    <span>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </nav>
-
-          <div className="sidebar-foot">
-            <div className="sidebar-user">
-              <span className="avatar" aria-hidden>
-                <IconInspector size={14} />
-              </span>
-              <span className="trunc" style={{ ["--trunc-w" as string]: "150px" }} title={user.displayName}>
-                {user.displayName}
-              </span>
-            </div>
-            <Button variant="ghost" size="sm" icon={<IconLogout size={14} aria-hidden />} onClick={handleLogout}>
-              로그아웃
-            </Button>
-          </div>
-        </aside>
-
-        <div className="app-main">
-          <header className="topbar">
-            <div className="topbar-context">
-              <div className="topbar-campaign">
-                <strong>{SECTIONS.find((item) => item.id === section)?.label}</strong>
-                <span>{user.role === "admin" ? "전체 센터" : user.center}</span>
-              </div>
-            </div>
-            <div className="topbar-actions">
-              <label className="row" style={{ gap: 6 }}>
-                <IconDate size={14} aria-hidden />
-                <span className="sr-only">운영일</span>
-                <input
-                  className="input"
-                  type="date"
-                  value={date}
-                  max={currentBusinessDate()}
-                  onChange={(event) => setDate(event.target.value || currentBusinessDate())}
-                  style={{ width: 150 }}
-                />
-              </label>
-            </div>
-          </header>
-
-          <main className="app-content">
-            {section === "board" && <OpsBoardView date={date} onOpenQueue={() => setSection("queue")} />}
-            {section === "queue" && <ExceptionQueueView date={date} />}
-            {section === "centers" && <CentersView date={date} />}
-            {section === "inspectors" && <InspectorsView date={date} />}
-            {section === "inspections" && <InspectionsView date={date} />}
-          </main>
-        </div>
-      </div>
+      <Shell user={user} writesEnabled={writesEnabled} selected={selected} onSelect={setSelected} onLogout={handleLogout} />
     </ToastProvider>
+  );
+}
+
+function Shell({
+  user,
+  writesEnabled,
+  selected,
+  onSelect,
+  onLogout,
+}: {
+  user: AuthenticatedUser;
+  writesEnabled: boolean;
+  selected?: string;
+  onSelect: (name: string) => void;
+  onLogout: () => void;
+}) {
+  const catalog = useResource(() => fetchDatasets(), "datasets");
+  const health = useResource(() => fetchHealth(), "health");
+
+  const datasets: DatasetEntry[] = catalog.data?.datasets ?? [];
+  const entry = datasets.find((item) => item.name === selected);
+  const notConfigured = health.data?.inspectionApiConfigured === false;
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <IconMaster size={18} aria-hidden />
+          <strong>검품 마스터 콘솔</strong>
+        </div>
+
+        <nav className="sidebar-nav" aria-label="데이터셋">
+          <div className="sidebar-section">데이터셋</div>
+
+          {catalog.loading && !catalog.data && (
+            <span className="sidebar-link" aria-busy="true">
+              <IconSpinner size={14} className="spin" aria-hidden />
+              <span>불러오는 중</span>
+            </span>
+          )}
+
+          {catalog.error && (
+            <span className="sidebar-link" title={catalog.error}>
+              <IconError size={14} aria-hidden />
+              <span>목록을 불러올 수 없음</span>
+            </span>
+          )}
+
+          {datasets.map((item) => (
+            <button
+              key={item.name}
+              type="button"
+              className="sidebar-link"
+              aria-current={selected === item.name ? "page" : undefined}
+              title={item.name}
+              onClick={() => onSelect(item.name)}
+            >
+              <IconMaster size={16} aria-hidden />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-foot">
+          <div className="sidebar-user">
+            <span className="avatar" aria-hidden>
+              <IconUser size={14} />
+            </span>
+            <span className="trunc" style={{ ["--trunc-w" as string]: "150px" }} title={user.displayName}>
+              {user.displayName}
+            </span>
+          </div>
+          <Button variant="ghost" size="sm" icon={<IconLogout size={14} aria-hidden />} onClick={onLogout}>
+            로그아웃
+          </Button>
+        </div>
+      </aside>
+
+      <div className="app-main">
+        <header className="topbar">
+          <div className="topbar-context">
+            <div className="topbar-campaign">
+              <strong>{entry?.label ?? "검품 마스터 콘솔"}</strong>
+              <span>{notConfigured ? "미연결" : "검품 운영 데이터 원본"}</span>
+            </div>
+          </div>
+          <div className="topbar-actions">
+            <Badge tone={writesEnabled ? "warning" : "neutral"} size="sm">
+              {writesEnabled ? "수정 가능" : "읽기 전용"}
+            </Badge>
+          </div>
+        </header>
+
+        <main className="app-content">
+          {notConfigured ? (
+            <div className="page">
+              <Notice
+                tone="warning"
+                icon={<IconWarning size={16} aria-hidden />}
+                title="검품 앱에 연결되지 않았습니다"
+              >
+                이 콘솔은 자체 데이터를 보관하지 않습니다. 아래 환경변수를 설정해야 정규 기준정보를 조회할 수
+                있습니다.
+                <br />
+                <code>{(health.data?.missingInspectionVars ?? []).join(", ") || "INSPECTION_APP_BASE, INSPECTION_SESSION_TOKEN"}</code>
+              </Notice>
+            </div>
+          ) : entry ? (
+            <MasterConsoleView entry={entry} writesEnabled={writesEnabled} />
+          ) : (
+            <NoDatasetSelected datasets={datasets} />
+          )}
+        </main>
+      </div>
+    </div>
   );
 }

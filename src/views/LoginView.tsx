@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { AuthenticatedUser } from "../domain/types";
 import { login } from "../api";
 import { Button, Field, Input, Notice } from "../ui";
-import { IconError, IconOpsBoard } from "../ui/icons";
+import { IconError, IconMaster } from "../ui/icons";
 
 export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser) => void }) {
   const [userId, setUserId] = useState("");
@@ -28,9 +28,9 @@ export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <IconOpsBoard size={24} aria-hidden />
-          <strong style={{ fontSize: "var(--fs-lg)" }}>검품 운영 콘솔</strong>
-          <span className="muted">Inspection Operations Console</span>
+          <IconMaster size={24} aria-hidden />
+          <strong style={{ fontSize: "var(--fs-lg)" }}>검품 마스터 콘솔</strong>
+          <span className="muted">Inspection Master Console</span>
         </div>
 
         {error && (
@@ -49,7 +49,7 @@ export function LoginView({ onSignedIn }: { onSignedIn: (user: AuthenticatedUser
           />
         </Field>
 
-        <Field label="비밀번호" htmlFor="login-password" hint="본사 운영 계정 또는 센터 담당 계정으로 로그인합니다.">
+        <Field label="비밀번호" htmlFor="login-password" hint="검품 운영 관리자 계정으로 로그인합니다.">
           <Input
             id="login-password"
             type="password"
