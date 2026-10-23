@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
-import type { InspectionRow, QtyConfirmation } from "../domain/types";
+import type { InspectionRow } from "../domain/types";
 import type { FilterMode } from "../api";
-import { confirmQty, correctQty, fetchRows, newQtyRequestId } from "../api";
+import { fetchRows, newQtyRequestId } from "../api";
 import { photoIdsOf } from "../photos";
 import {
   activeFilterCount,
@@ -21,27 +21,24 @@ import {
 } from "../lib/rowsModel";
 import type { IssueFilter, PhotoFilter, RowFilters, SortKey, SortSpec, StatusFilter, SupplierGroup } from "../lib/rowsModel";
 import { useResource } from "../useResource";
+import { CorrectionDialog } from "./CorrectionDialog";
 import { DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN, RowDetail } from "./RowDetail";
 import {
   Button,
-  ConfirmDialog,
   DataGrid,
   EmptyState,
   ErrorState,
   LoadingState,
   MultiSelect,
-  Notice,
   SearchInput,
   Segmented,
   Select,
-  useToast,
 } from "../ui";
 import type { GridColumn } from "../ui";
 import {
   IconCamera,
   IconChevronDown,
   IconChevronRight,
-  IconError,
   IconFilterReset,
   IconRows,
 } from "../ui/icons";
@@ -106,18 +103,14 @@ const rowKeyOf = (row: InspectionRow) => `${jobOf(row)}|${row.__rowNumber ?? ""}
 /** The 1,000+ row table is only readable if "nothing done yet" recedes. */
 const isTodo = (row: InspectionRow) => num(row.검품수량) === 0;
 
-interface PendingCorrection {
-  row: InspectionRow;
-  qty: number;
-  requestId: string;
-  confirmation?: QtyConfirmation;
-}
-
 export function RowsView({
   correctionsEnabled,
+  correctionJobs,
   inspectionBase,
 }: {
   correctionsEnabled: boolean;
+  /** Jobs a correction may touch; empty means any. */
+  correctionJobs: string[];
   inspectionBase: string | null;
 }) {
   const [mode, setMode] = useState<FilterMode>("current");
@@ -127,16 +120,20 @@ export function RowsView({
   const [sort, setSort] = useState<SortSpec>({ key: "supplier", dir: "asc" });
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [selected, setSelected] = useState<InspectionRow>();
-  const [pending, setPending] = useState<PendingCorrection>();
-  const [busy, setBusy] = useState(false);
+  const [correcting, setCorrecting] = useState<{ row: InspectionRow; qty: number; requestId: string }>();
   const [detailWidth, setDetailWidth] = useState(readDetailWidth);
   const scroller = useRef<HTMLDivElement>(null);
-  const pushToast = useToast();
 
   const { data, error, loading, reload } = useResource(() => fetchRows({ filterMode: mode }), `rows:${mode}`);
   const rows = useMemo(() => data?.rows ?? [], [data]);
 
   const grouped = view === "group";
+  const selectedKey = selected ? rowKeyOf(selected) : undefined;
+  // After a correction or a conflict the table is re-read; the panel must show the new row, not the clicked copy.
+  const current = useMemo(
+    () => (selectedKey ? rows.find((row) => rowKeyOf(row) === selectedKey) ?? selected : undefined),
+    [rows, selectedKey, selected],
+  );
   const deferredQuery = useDeferredValue(filters.query);
 
   const jobs = useMemo(() => {
@@ -393,63 +390,9 @@ export function RowsView({
     [],
   );
 
-  async function runCorrection() {
-    if (!pending) return;
-    setBusy(true);
-    const { row, qty, requestId } = pending;
-    const rowJob = jobOf(row);
-    const rowCode = text(row.상품코드);
-    try {
-      const { saved } = await correctQty({
-        jobKey: rowJob,
-        productCode: rowCode,
-        partnerName: text(row.협력사명),
-        productName: text(row.상품명),
-        qty,
-        orderQty: num(row.발주수량),
-        baseQty: num(row.검품수량),
-        requestId,
-      });
-
-      // A pending receipt is not a failure. Read the canonical row back and let
-      // that decide, rather than retrying the write.
-      if (saved.pendingWrite || saved.ok === false) {
-        const confirmation = await confirmQty(rowJob, rowCode, requestId);
-        setPending({ ...pending, confirmation });
-        pushToast({
-          tone: confirmation.matches ? "success" : "warning",
-          title: confirmation.matches ? "보정이 반영되어 있습니다" : "저장 여부가 확정되지 않았습니다",
-          description: confirmation.matches ? undefined : "같은 요청 ID로 다시 확인하세요. 다시 저장하지 마세요.",
-        });
-        return;
-      }
-
-      const confirmation = await confirmQty(rowJob, rowCode, requestId).catch(() => undefined);
-      pushToast({
-        tone: "success",
-        title: "검품수량 보정 완료",
-        description: `${text(row.상품명)} · ${num(row.검품수량)} → ${qty}`,
-      });
-      setPending(undefined);
-      setSelected(undefined);
-      if (confirmation && confirmation.matches === false) {
-        pushToast({ tone: "warning", title: "저장은 되었으나 확인 조회가 일치하지 않습니다", description: "화면을 새로 고쳐 확인하세요." });
-      }
-      reload();
-    } catch (cause) {
-      const retryable = cause instanceof Error && "retryable" in cause && (cause as { retryable?: boolean }).retryable;
-      // On an uncertain outcome never resubmit; read the row back instead.
-      const confirmation = retryable ? await confirmQty(rowJob, rowCode, requestId).catch(() => undefined) : undefined;
-      setPending({ ...pending, confirmation });
-      pushToast({
-        tone: "danger",
-        title: confirmation?.matches ? "응답은 실패했지만 보정은 반영되었습니다" : "보정에 실패했습니다",
-        description: cause instanceof Error ? cause.message : undefined,
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
+  /** A correction is allowed only when enabled and, if a job list is set, only for those jobs. */
+  const correctable = (row: InspectionRow) =>
+    correctionsEnabled && (correctionJobs.length === 0 || correctionJobs.includes(jobOf(row)));
 
   if (loading && !data) return <LoadingState label="검품 내역을 불러오는 중" />;
 
@@ -536,21 +479,6 @@ export function RowsView({
           </Button>
         </div>
       </header>
-
-      {pending?.confirmation && (
-        <Notice
-          tone={pending.confirmation.matches ? "success" : "warning"}
-          icon={<IconError size={16} aria-hidden />}
-          title={pending.confirmation.matches ? "원본 행에 반영 확인됨" : "원본 행에서 확인되지 않음 — 다시 저장하지 마세요"}
-          actions={
-            <Button size="sm" onClick={() => setPending(undefined)}>
-              닫기
-            </Button>
-          }
-        >
-          <span className="mono">requestId {pending.requestId}</span>
-        </Notice>
-      )}
 
       <div className="console-body">
         <div className="console-main">
@@ -678,7 +606,7 @@ export function RowsView({
                 rows={sorted}
                 groups={groups}
                 rowKey={rowKeyOf}
-                selectedKey={selected ? rowKeyOf(selected) : undefined}
+                selectedKey={selectedKey}
                 onSelect={onSelect}
                 sort={effectiveSort}
                 onSort={onSort}
@@ -694,45 +622,34 @@ export function RowsView({
           </div>
         </div>
 
-        {selected && (
+        {current && (
           <RowDetail
-            key={rowKeyOf(selected)}
-            row={selected}
+            key={rowKeyOf(current)}
+            row={current}
             inspectionBase={inspectionBase}
-            correctionsEnabled={correctionsEnabled}
+            correctionsEnabled={correctable(current)}
+            correctionNote={
+              correctionsEnabled && !correctable(current) ? "이 배포는 지정된 작업(job)에서만 보정을 허용합니다." : undefined
+            }
             width={detailWidth}
             onWidthChange={changeDetailWidth}
             onClose={() => setSelected(undefined)}
-            onCorrect={(qty) => setPending({ row: selected, qty, requestId: newQtyRequestId() })}
+            onCorrect={(qty) => setCorrecting({ row: current, qty, requestId: newQtyRequestId() })}
           />
         )}
       </div>
 
-      <ConfirmDialog
-        open={Boolean(pending) && !pending?.confirmation}
-        title="검품수량 보정"
-        confirmLabel="보정 저장"
-        cancelLabel="취소"
-        tone="danger"
-        busy={busy}
-        onConfirm={runCorrection}
-        onCancel={() => setPending(undefined)}
-      >
-        {pending && (
-          <div className="stack" data-gap="sm">
-            <Notice tone="danger" icon={<IconError size={16} aria-hidden />}>
-              검품 앱의 원본 행이 바뀝니다. 화면에 보인 수량({formatNumber(num(pending.row.검품수량))})이 그대로일 때만
-              저장되고, 그 사이 누가 고쳤다면 거부됩니다.
-            </Notice>
-            <p>
-              <b>{text(pending.row.상품명)}</b> · {text(pending.row.상품코드)}
-              <br />
-              {formatNumber(num(pending.row.검품수량))} → <b>{formatNumber(pending.qty)}</b>
-            </p>
-            <span className="muted mono">requestId {pending.requestId}</span>
-          </div>
-        )}
-      </ConfirmDialog>
+      {correcting && (
+        <CorrectionDialog
+          row={correcting.row}
+          qty={correcting.qty}
+          requestId={correcting.requestId}
+          onClose={(changed) => {
+            setCorrecting(undefined);
+            if (changed) reload();
+          }}
+        />
+      )}
     </div>
   );
 }

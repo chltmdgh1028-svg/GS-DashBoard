@@ -838,3 +838,64 @@ table.data.grid tr.group:hover td {
     box-shadow: var(--sh-lg);
   }
 }
+
+/* ------------------------- Correction: before -> after ------------------------ */
+.qty-change {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.qty-change > div {
+  display: grid;
+  gap: 2px;
+  min-width: 96px;
+  text-align: center;
+}
+
+.qty-change span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.qty-change b {
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.qty-change .arrow {
+  font-size: var(--fs-xl);
+  color: var(--text-muted);
+}
+
+.qty-change div[data-tone="accent"] b {
+  color: var(--accent);
+}
+
+.qty-change div[data-tone="danger"] b {
+  color: var(--neg);
+}
+
+.qty-change em {
+  font-style: normal;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.qty-change em[data-sign="up"] {
+  color: var(--pos);
+}
+
+.qty-change em[data-sign="down"] {
+  color: var(--neg);
+}

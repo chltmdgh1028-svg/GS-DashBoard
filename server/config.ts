@@ -44,6 +44,19 @@ export function correctionsEnabled() {
 }
 
 /**
+ * Limits corrections to specific jobs. Empty means any job once corrections are
+ * enabled. During a verification window this is set to the single job under
+ * test, so a mistake - or a request this console should never have accepted -
+ * cannot reach a live job.
+ */
+export function correctionJobAllowlist(): string[] {
+  return trimmed("CORRECTIONS_JOB_ALLOWLIST")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
  * The inspection app's origin, safe to hand to the browser: photos are served
  * from it by signed id (`/api/photo?id=...`), which is a capability in itself
  * and needs no header, so the image can load directly instead of being

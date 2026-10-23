@@ -122,15 +122,60 @@ export interface QtyConfirmation {
 export interface QtyCorrection {
   jobKey: string;
   productCode: string;
-  partnerName?: string;
+  partnerName: string;
   productName?: string;
   qty: number;
   orderQty?: number;
   /** The qty the operator was looking at. The app refuses the write if it moved. */
   baseQty: number;
+  /** The row's 수량요청리비전 as read. Closes the gap where a qty changes and changes back. */
   baseRevision?: number;
   /** `qty-<timestamp>-<id>`; stable across retries of the same correction. */
   requestId: string;
+}
+
+/**
+ * What a save actually did, per row. `ok: true` from the app does NOT mean the
+ * correction landed - a CAS conflict is also `ok: true` - so this is read from
+ * the per-row result and nothing else.
+ */
+export type QtyStatus =
+  | "updated"
+  | "idempotent_replay"
+  | "conflict"
+  | "stale_ignored"
+  | "blocked"
+  | "pending"
+  | "unknown";
+
+export interface QtyOutcome {
+  status: QtyStatus;
+  reason?: string;
+  message?: string;
+  /** The qty the app says it saved. */
+  savedQty?: number;
+  /** On a conflict: the value the row holds now, to show instead of overwriting it. */
+  currentQty?: number;
+  currentRevision?: number;
+  version?: string;
+  updatedAt?: string;
+}
+
+/**
+ * The canonical row read back after a save (or after an uncertain one). This,
+ * not the save response, is what decides whether the correction is in effect.
+ */
+export interface QtyVerification {
+  found: boolean;
+  qty?: number;
+  revision?: number;
+  requestId?: string;
+  version?: string;
+  updatedAt?: string;
+  matchesQty: boolean;
+  matchesRequestId: boolean;
+  /** Supplementary: the app's own confirmInspectionQty. May be inconclusive; never decides alone. */
+  confirm?: { matches?: boolean; requestIdMatched?: boolean; error?: string };
 }
 
 /* ----------------------------------------------------------------- Health */

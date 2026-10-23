@@ -1,29 +1,12 @@
 import { useState } from "react";
-import type { WriteReceipt } from "../domain/types";
-import { confirmQty, fetchWriteStatus, recoverWrite } from "../api";
-import {
-  Badge,
-  Button,
-  Field,
-  Input,
-  Notice,
-  PageHeader,
-  SectionCard,
-  Select,
-  useToast,
-} from "../ui";
-import { IconError, IconInfo, IconReceipt } from "../ui/icons";
+import type { QtyVerification, WriteReceipt } from "../domain/types";
+import { fetchWriteStatus, recoverWrite, verifyQty } from "../api";
+import { Badge, Button, Field, Input, Notice, PageHeader, SectionCard, Select, useToast } from "../ui";
+import { IconInfo, IconReceipt } from "../ui/icons";
+import { formatNumber } from "../view-models/format";
 
 /** The write kinds the inspection app keeps a receipt ledger for. */
-const KINDS = [
-  "action_status",
-  "ai_feedback_save",
-  "ai_feedback_reconcile",
-  "history_sync",
-  "inspection_full",
-  "brix",
-  "weight",
-];
+const KINDS = ["action_status", "ai_feedback_save", "ai_feedback_reconcile", "history_sync", "inspection_full", "brix", "weight"];
 
 const STATE_TONE: Record<string, "success" | "danger" | "warning" | "neutral"> = {
   COMMITTED: "success",
@@ -40,12 +23,14 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
   const [busy, setBusy] = useState(false);
   const pushToast = useToast();
 
-  // A qty correction is confirmed by reading the row, not from the ledger, so
-  // it gets its own lookup keyed by the request id the correction used.
+  // A qty correction is resolved by reading the row, not from the receipt ledger.
   const [jobKey, setJobKey] = useState("");
   const [productCode, setProductCode] = useState("");
+  const [partnerName, setPartnerName] = useState("");
+  const [expectedQty, setExpectedQty] = useState("");
   const [requestId, setRequestId] = useState("");
-  const [qtyResult, setQtyResult] = useState<string>();
+  const [verification, setVerification] = useState<QtyVerification>();
+  const [verifyError, setVerifyError] = useState<string>();
 
   const ready = operationId.trim() !== "" && payloadHash.trim() !== "";
 
@@ -70,22 +55,27 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
     }
   }
 
-  async function runQtyConfirm() {
-    if (!jobKey.trim() || !productCode.trim()) return;
+  const qtyReady = jobKey.trim() !== "" && productCode.trim() !== "" && partnerName.trim() !== "" && expectedQty.trim() !== "";
+
+  async function runVerify() {
+    if (!qtyReady) return;
     setBusy(true);
+    setVerifyError(undefined);
     try {
-      const result = await confirmQty(jobKey.trim(), productCode.trim(), requestId.trim());
-      setQtyResult(
-        result.matches
-          ? requestId.trim()
-            ? result.requestIdMatched
-              ? "이 요청이 원본 행에 반영되어 있습니다."
-              : "행은 일치하지만 이 requestId로 기록된 것은 아닙니다."
-            : "행이 일치합니다."
-          : "원본 행이 조회 조건과 일치하지 않습니다. 보정이 반영되지 않았을 수 있습니다.",
+      setVerification(
+        (
+          await verifyQty({
+            jobKey: jobKey.trim(),
+            productCode: productCode.trim(),
+            partnerName: partnerName.trim(),
+            expectedQty: Number(expectedQty),
+            requestId: requestId.trim(),
+          })
+        ).verification,
       );
     } catch (cause) {
-      setQtyResult(cause instanceof Error ? cause.message : "확인에 실패했습니다.");
+      setVerification(undefined);
+      setVerifyError(cause instanceof Error ? cause.message : "확인에 실패했습니다.");
     } finally {
       setBusy(false);
     }
@@ -99,17 +89,70 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
       <PageHeader
         icon={<IconReceipt size={20} aria-hidden />}
         title="저장 / 복구 상태"
-        description="저장 결과가 불확실할 때 다시 저장하지 않고 영수증을 읽어 확인합니다."
+        description="저장 결과가 불확실할 때 다시 저장하지 않고 원본을 읽어 확인합니다."
       />
 
       <Notice tone="info" icon={<IconInfo size={16} aria-hidden />} title="다시 저장하지 마세요">
-        응답이 유실되었거나 PENDING으로 끝난 저장은 이미 반영되었을 수 있습니다. 같은 operationId로 상태를
-        조회하고, 필요하면 복구를 요청하세요. 같은 내용을 다시 저장하면 중복이 생길 수 있습니다.
-        영수증은 operationId와 payloadHash를 둘 다 알아야 찾을 수 있습니다. 수량 보정은 이 방식이 아니라 아래
-        "수량 보정 확인"으로 원본 행을 읽어 확인합니다.
+        응답이 유실되었거나 PENDING으로 끝난 저장은 이미 반영되었을 수 있습니다. 아래에서 확인만 하세요. 영수증은
+        operationId와 payloadHash를 둘 다 알아야 찾을 수 있고, 수량 보정은 영수증이 아니라 원본 행을 읽어 확인합니다.
       </Notice>
 
-      <SectionCard title="네이티브 저장 영수증" subtitle="operationId로 조회">
+      <SectionCard title="수량 보정 확인" subtitle="원본 행을 다시 읽어 반영 여부를 판정 (읽기 전용)">
+        <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
+          <Field label="작업(jobKey)">
+            <Input value={jobKey} onChange={(event) => setJobKey(event.target.value)} style={{ width: 240 }} />
+          </Field>
+          <Field label="상품코드">
+            <Input value={productCode} onChange={(event) => setProductCode(event.target.value)} style={{ width: 150 }} />
+          </Field>
+          <Field label="협력사명">
+            <Input value={partnerName} onChange={(event) => setPartnerName(event.target.value)} style={{ width: 200 }} />
+          </Field>
+          <Field label="기대 수량">
+            <Input type="number" min={0} value={expectedQty} onChange={(event) => setExpectedQty(event.target.value)} style={{ width: 100 }} />
+          </Field>
+          <Field label="requestId" hint="선택 · 보정 때 쓴 qty-… 값">
+            <Input value={requestId} onChange={(event) => setRequestId(event.target.value)} style={{ width: 260 }} />
+          </Field>
+          <Button variant="primary" loading={busy} disabled={!qtyReady} onClick={runVerify}>
+            원본 확인
+          </Button>
+        </div>
+
+        {verifyError && (
+          <Notice tone="danger" title="확인에 실패했습니다">
+            {verifyError}
+          </Notice>
+        )}
+        {verification && (
+          <div className="stack" data-gap="sm" style={{ marginTop: 16 }}>
+            <div className="row">
+              <Badge tone={verification.found ? (verification.matchesQty ? "success" : "warning") : "danger"} size="sm">
+                {!verification.found ? "행 없음" : verification.matchesQty ? "기대 수량과 일치" : "기대 수량과 다름"}
+              </Badge>
+              {requestId.trim() && (
+                <Badge tone={verification.matchesRequestId ? "success" : "neutral"} size="sm">
+                  {verification.matchesRequestId ? "요청 ID 일치" : "요청 ID 불일치"}
+                </Badge>
+              )}
+            </div>
+            {verification.found && (
+              <dl className="kv">
+                <dt>원본 검품수량</dt>
+                <dd>{verification.qty === undefined ? "-" : formatNumber(verification.qty)}</dd>
+                <dt>원본 요청 ID</dt>
+                <dd className="mono">{verification.requestId || "-"}</dd>
+                <dt>버전</dt>
+                <dd>{verification.version || "-"}</dd>
+                <dt>수정</dt>
+                <dd>{verification.updatedAt || "-"}</dd>
+              </dl>
+            )}
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard title="네이티브 저장 영수증" subtitle="operationId + payloadHash로 조회 (수량 보정 외 저장용)">
         <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
           <Field label="kind">
             <Select value={kind} onChange={(event) => setKind(event.target.value)}>
@@ -142,7 +185,11 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
         {receipt && (
           <div className="stack" data-gap="sm" style={{ marginTop: 16 }}>
             <div className="row">
-              {state && <Badge tone={STATE_TONE[state] ?? "neutral"} size="sm">{state}</Badge>}
+              {state && (
+                <Badge tone={STATE_TONE[state] ?? "neutral"} size="sm">
+                  {state}
+                </Badge>
+              )}
               {ack?.authoritative === true && <Badge tone="success" size="sm">authoritative</Badge>}
               {receipt.pendingWrite && <Badge tone="warning" size="sm">pending</Badge>}
             </div>
@@ -151,28 +198,6 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
               {JSON.stringify(receipt, null, 2)}
             </pre>
           </div>
-        )}
-      </SectionCard>
-
-      <SectionCard title="수량 보정 확인" subtitle="원본 행을 읽어 반영 여부를 판정">
-        <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
-          <Field label="작업기준일/CSV 식별값">
-            <Input value={jobKey} onChange={(event) => setJobKey(event.target.value)} style={{ width: 260 }} />
-          </Field>
-          <Field label="상품코드">
-            <Input value={productCode} onChange={(event) => setProductCode(event.target.value)} style={{ width: 160 }} />
-          </Field>
-          <Field label="requestId" hint="보정 시 사용한 qty-… 값">
-            <Input value={requestId} onChange={(event) => setRequestId(event.target.value)} style={{ width: 300 }} />
-          </Field>
-          <Button variant="primary" loading={busy} disabled={!jobKey.trim() || !productCode.trim()} onClick={runQtyConfirm}>
-            확인
-          </Button>
-        </div>
-        {qtyResult && (
-          <Notice tone="info" icon={<IconError size={16} aria-hidden />} title="확인 결과">
-            {qtyResult}
-          </Notice>
         )}
       </SectionCard>
     </div>

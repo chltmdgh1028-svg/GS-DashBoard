@@ -86,6 +86,8 @@ export interface GasEnvelope {
   pendingWrite?: boolean;
   isTransient?: boolean;
   retryable?: boolean;
+  /** Set by the app when a write may or may not have landed (e.g. QTY_POST_WRITE_VERIFY_MISMATCH). */
+  requiresConfirmation?: boolean;
   nativeAck?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -144,7 +146,7 @@ export async function gas<T extends GasEnvelope>(request: GasRequest): Promise<T
         (code ? CODE_STATUS[code] : undefined) ?? 409,
         envelope.message || code || `${request.action} 요청이 거부되었습니다.`,
         code,
-        envelope.retryable === true || envelope.isTransient === true,
+        envelope.retryable === true || envelope.isTransient === true || envelope.requiresConfirmation === true,
       );
     }
 
@@ -162,11 +164,12 @@ export async function gas<T extends GasEnvelope>(request: GasRequest): Promise<T
         true,
       );
     }
+    // "fetch failed" tells an operator nothing. Say what it means for a write: no answer was received.
     throw new InspectionApiError(
       request.action,
       502,
-      cause instanceof Error ? cause.message : String(cause),
-      undefined,
+      `검품 앱에서 응답을 받지 못했습니다 (${cause instanceof Error ? cause.message : String(cause)}). 요청이 반영되었는지는 알 수 없습니다.`,
+      "NO_RESPONSE",
       true,
     );
   } finally {

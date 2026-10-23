@@ -6,26 +6,9 @@ import { photoIdsOf } from "../photos";
 import { num } from "../lib/rowsModel";
 import { Button, Field, Input } from "../ui";
 import { IconCamera, IconClose } from "../ui/icons";
-import { formatNumber } from "../view-models/format";
+import { formatKst, formatNumber } from "../view-models/format";
 
 const text = (value: unknown) => (value == null ? "" : String(value));
-
-/** The app stores timestamps as UTC ISO strings; operators read them in Korea time. */
-function kst(value: unknown) {
-  const raw = text(value);
-  if (!/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw;
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  return date.toLocaleString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
 
 /** One big preview with a thumbnail strip. The big image opens the original in a new tab. */
 function Photos({ ids, base, alt }: { ids: string[]; base: string | null; alt: string }) {
@@ -94,6 +77,7 @@ export function RowDetail({
   row,
   inspectionBase,
   correctionsEnabled,
+  correctionNote,
   width,
   onWidthChange,
   onClose,
@@ -101,7 +85,10 @@ export function RowDetail({
 }: {
   row: InspectionRow;
   inspectionBase: string | null;
+  /** True only when corrections are on AND this row's job may be corrected. */
   correctionsEnabled: boolean;
+  /** Why a correction is unavailable, when corrections are on but this row is out of scope. */
+  correctionNote?: string;
   width: number;
   onWidthChange: (width: number) => void;
   onClose: () => void;
@@ -135,6 +122,12 @@ export function RowDetail({
   }
 
   const [qty, setQty] = useState(String(num(row.검품수량)));
+  const [seenQty, setSeenQty] = useState(num(row.검품수량));
+  // The row was re-read (after a correction or a conflict): restart the input from the new value.
+  if (seenQty !== num(row.검품수량)) {
+    setSeenQty(num(row.검품수량));
+    setQty(String(num(row.검품수량)));
+  }
   const ids = photoIdsOf(row);
   const reasons = text(row.불량사유)
     .split(",")
@@ -221,13 +214,13 @@ export function RowDetail({
             {row.작성일시 ? (
               <>
                 <dt>작성</dt>
-                <dd>{kst(row.작성일시)}</dd>
+                <dd>{formatKst(row.작성일시)}</dd>
               </>
             ) : null}
             {row.수정일시 ? (
               <>
                 <dt>수정</dt>
-                <dd>{kst(row.수정일시)}</dd>
+                <dd>{formatKst(row.수정일시)}</dd>
               </>
             ) : null}
             {row.버전 !== undefined ? (
@@ -238,6 +231,13 @@ export function RowDetail({
             ) : null}
           </dl>
         </section>
+
+        {!correctionsEnabled && correctionNote && (
+          <section className="detail-section">
+            <h3>검품수량 보정</h3>
+            <p className="muted">{correctionNote}</p>
+          </section>
+        )}
 
         {correctionsEnabled && (
           <section className="detail-section">

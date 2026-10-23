@@ -109,3 +109,20 @@ export function formatSignedPoint(value?: number, digits = 1) {
   const sign = points > 0 ? "+" : points < 0 ? "-" : "±";
   return `${sign}${Math.abs(points).toFixed(digits)}%p`;
 }
+
+/** The app stores timestamps as UTC ISO strings; operators read them in Korea time. Anything else is returned as is. */
+export function formatKst(value: unknown) {
+  const raw = value == null ? "" : String(value);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}

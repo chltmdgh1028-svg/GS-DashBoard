@@ -7,8 +7,9 @@ import type {
   ConsoleHealth,
   InspectionRowsResponse,
   MovementRecord,
-  QtyConfirmation,
   QtyCorrection,
+  QtyOutcome,
+  QtyVerification,
   WriteReceipt,
 } from "./domain/types";
 
@@ -66,6 +67,7 @@ export function fetchSession() {
   return request<{
     user: AuthenticatedUser | null;
     correctionsEnabled: boolean;
+    correctionJobs: string[];
     adminGridUrl: string | null;
     inspectionBase: string | null;
   }>("/api/session");
@@ -125,21 +127,30 @@ export function recoverWrite(operationId: string, kind: string, payloadHash: str
   });
 }
 
+/**
+ * Send one correction. The reply is the per-row outcome, not a yes/no: a CAS
+ * conflict comes back as a normal outcome with the value the row holds now.
+ * A thrown error with `retryable` means the write may have landed - read the
+ * row (verifyQty), never resend.
+ */
 export function correctQty(correction: QtyCorrection) {
-  return request<{ saved: WriteReceipt }>("/api/ops/correct-qty", {
+  return request<{ outcome: QtyOutcome }>("/api/ops/correct-qty", {
     method: "POST",
     body: JSON.stringify(correction),
   });
 }
 
-/**
- * Resolve an uncertain correction by reading the canonical row back. This is
- * the only correct response to a timeout: never resubmit the write.
- */
-export function confirmQty(jobKey: string, productCode: string, requestId: string) {
-  return request<QtyConfirmation>("/api/ops/confirm-qty", {
+/** Re-read the canonical row and compare it with what the correction should have produced. */
+export function verifyQty(args: {
+  jobKey: string;
+  productCode: string;
+  partnerName: string;
+  expectedQty: number;
+  requestId: string;
+}) {
+  return request<{ verification: QtyVerification }>("/api/ops/verify-qty", {
     method: "POST",
-    body: JSON.stringify({ jobKey, productCode, requestId }),
+    body: JSON.stringify(args),
   });
 }
 

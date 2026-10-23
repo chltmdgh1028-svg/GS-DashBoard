@@ -24,12 +24,15 @@ import express from "express";
 import type { AuthenticatedUser } from "../src/domain/types.js";
 import {
   adminGridUrl,
+  correctionJobAllowlist,
   correctionsEnabled,
   inspectionApiConfig,
   inspectionBase,
   missingInspectionVars,
 } from "./config.js";
 import { gas, InspectionApiError, NotConfiguredError } from "./inspectionApi.js";
+import { parseQtySave } from "./qtyOutcome.js";
+import type { InspectionRowsResponse, QtyVerification } from "../src/domain/types.js";
 
 const adminId = process.env.ADMIN_ID || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD || "";
@@ -169,6 +172,8 @@ export function createApp() {
     res.json({
       user: sessionFromRequest(req) ?? null,
       correctionsEnabled: correctionsEnabled(),
+      /** Empty = any job. Job keys are not secret and the UI needs them to hide a correction it would be refused. */
+      correctionJobs: correctionJobAllowlist(),
       adminGridUrl: adminGridUrl() ?? null,
       inspectionBase: inspectionBase() ?? null,
     });
@@ -278,21 +283,35 @@ export function createApp() {
   /**
    * Correct one row's 검품수량.
    *
-   * `baseQty` and `baseRevision` are the values the operator was looking at.
-   * The app's qty state machine compares them with the stored row and refuses
-   * the write if they have moved, so a correction made against a stale screen
-   * cannot land. `requestId` carries the timestamp the app parses for
-   * ordering and is stable across retries of the same correction.
+   * Everything that makes this safe is the app's own state machine; this route
+   * only feeds it the right inputs and refuses to guess about the answer:
+   *
+   *  - `baseQty` (+ `baseRevision` when the row has one) is what the operator
+   *    was looking at. The app compares it with the stored row inside the
+   *    write transaction and answers `conflict` instead of overwriting.
+   *  - `requestId` is `qty-<ms>-<id>`: the app reads the timestamp for write
+   *    ordering, and an identical retry is recognised as `idempotent_replay`.
+   *  - `isUserAction` and, for 0, `explicitZero` are what the app requires
+   *    before it will lower a quantity. Zero is a legitimate correction.
+   *
+   * The reply is the per-row outcome, because `ok: true` also covers a
+   * conflict. A transport failure or timeout is thrown as retryable and never
+   * retried here: the write may have landed, and the way out is to read.
    */
   app.post("/api/ops/correct-qty", requireUser, requireCorrections, async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const jobKey = str(body.jobKey);
     const productCode = str(body.productCode);
+    const partnerName = str(body.partnerName);
     const requestId = str(body.requestId);
     const qty = Number(body.qty);
 
-    if (!jobKey || !productCode) {
-      return res.status(400).json({ error: "jobKey와 productCode가 필요합니다." });
+    if (!jobKey || !productCode || !partnerName) {
+      return res.status(400).json({ error: "jobKey, productCode, partnerName이 모두 필요합니다." });
+    }
+    const allowed = correctionJobAllowlist();
+    if (allowed.length && !allowed.includes(jobKey)) {
+      return res.status(403).json({ error: "이 배포는 지정된 작업(job)에서만 보정을 허용합니다." });
     }
     if (!Number.isFinite(qty) || qty < 0 || !Number.isInteger(qty)) {
       return res.status(400).json({ error: "검품수량은 0 이상의 정수여야 합니다." });
@@ -302,10 +321,17 @@ export function createApp() {
       // silently loses the timestamp and with it the ordering guarantee.
       return res.status(400).json({ error: "requestId는 qty-<timestamp>-<id> 형식이어야 합니다." });
     }
-
-    const hasBaseQty = body.baseQty !== undefined && body.baseQty !== null && body.baseQty !== "";
-    if (!hasBaseQty) {
+    if (body.baseQty === undefined || body.baseQty === null || body.baseQty === "") {
       return res.status(400).json({ error: "baseQty가 필요합니다. 화면을 새로 고친 뒤 다시 시도하세요." });
+    }
+    const baseQty = Number(body.baseQty);
+    if (!Number.isFinite(baseQty) || baseQty < 0) {
+      return res.status(400).json({ error: "baseQty가 올바르지 않습니다." });
+    }
+    const hasBaseRevision = body.baseRevision !== undefined && body.baseRevision !== null && body.baseRevision !== "";
+    const baseRevision = Number(body.baseRevision);
+    if (hasBaseRevision && (!Number.isSafeInteger(baseRevision) || baseRevision < 0)) {
+      return res.status(400).json({ error: "baseRevision이 올바르지 않습니다." });
     }
 
     try {
@@ -316,14 +342,12 @@ export function createApp() {
             type: "inspection",
             작업기준일또는CSV식별값: jobKey,
             상품코드: productCode,
-            협력사명: str(body.partnerName),
+            협력사명: partnerName,
             상품명: str(body.productName),
             검품수량: qty,
             ...(body.orderQty === undefined ? {} : { 발주수량: Number(body.orderQty) }),
-            baseQty: Number(body.baseQty),
-            ...(body.baseRevision === undefined || body.baseRevision === null
-              ? {}
-              : { baseRevision: Number(body.baseRevision) }),
+            baseQty,
+            ...(hasBaseRevision ? { baseRevision } : {}),
             requestId,
             isUserAction: true,
             explicitZero: qty === 0,
@@ -331,31 +355,67 @@ export function createApp() {
         ],
       });
 
-      res.json({ saved });
+      res.json({ outcome: parseQtySave(saved, qty) });
     } catch (cause) {
       sendError(res, cause);
     }
   });
 
   /**
-   * Read the canonical row back and say whether this exact request landed.
-   * This is how an unknown or timed-out correction is resolved - by reading,
-   * never by writing again.
+   * Read the canonical row back and say whether the correction is in effect.
+   *
+   * The deciding evidence is the row itself, re-read through `getInspectionRows`:
+   * its 검품수량 and its 수량요청ID. `confirmInspectionQty` is asked as well and
+   * reported alongside, but it can answer "not served here" instead of "no",
+   * so it never decides on its own. This is how an unknown or timed-out
+   * correction is resolved - by reading, never by writing again.
    */
-  app.post("/api/ops/confirm-qty", requireUser, async (req, res) => {
+  app.post("/api/ops/verify-qty", requireUser, async (req, res) => {
     const jobKey = str(req.body?.jobKey);
     const productCode = str(req.body?.productCode);
+    const partnerName = str(req.body?.partnerName);
     const requestId = str(req.body?.requestId);
-    if (!jobKey || !productCode) {
-      return res.status(400).json({ error: "jobKey와 productCode가 필요합니다." });
-    }
+    const expected = Number(req.body?.expectedQty);
+    if (!jobKey || !productCode) return res.status(400).json({ error: "jobKey와 productCode가 필요합니다." });
+
     try {
-      res.json(
-        await gas({
+      const fresh = await gas<InspectionRowsResponse & { ok?: boolean }>({
+        action: "getInspectionRows",
+        payload: { filterMode: "all", includeAllCenters: "true", includePhotos: "false" },
+      });
+      const rows = Array.isArray(fresh.rows) ? fresh.rows : [];
+      const row = rows.find(
+        (item) =>
+          str(item["작업기준일또는CSV식별값"]) === jobKey &&
+          str(item["상품코드"]) === productCode &&
+          (!partnerName || str(item["협력사명"]) === partnerName),
+      );
+
+      let confirm: QtyVerification["confirm"];
+      try {
+        const answer = await gas({
           action: "confirmInspectionQty",
           payload: { jobKey, productCode, requestId, 상품코드: productCode, 작업기준일또는CSV식별값: jobKey },
-        }),
-      );
+        });
+        confirm = { matches: answer.matches === true, requestIdMatched: answer.requestIdMatched === true };
+      } catch (cause) {
+        confirm = { error: cause instanceof Error ? cause.message : String(cause) };
+      }
+
+      const qty = row ? Number(row["검품수량"]) : undefined;
+      const revision = row && row["수량요청리비전"] !== "" ? Number(row["수량요청리비전"]) : undefined;
+      const verification: QtyVerification = {
+        found: Boolean(row),
+        qty: Number.isFinite(qty) ? qty : undefined,
+        revision: Number.isFinite(revision) ? revision : undefined,
+        requestId: row ? str(row["수량요청ID"]) : undefined,
+        version: row ? str(row["버전"]) : undefined,
+        updatedAt: row ? str(row["수정일시"]) : undefined,
+        matchesQty: Number.isFinite(expected) && qty === expected,
+        matchesRequestId: requestId !== "" && row !== undefined && str(row["수량요청ID"]) === requestId,
+        confirm,
+      };
+      res.json({ verification });
     } catch (cause) {
       sendError(res, cause);
     }

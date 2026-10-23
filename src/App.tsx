@@ -31,6 +31,7 @@ const SECTIONS: { id: SectionId; label: string; Icon: typeof IconRows }[] = [
 interface SessionState {
   user: AuthenticatedUser | null;
   correctionsEnabled: boolean;
+  correctionJobs: string[];
   adminGridUrl: string | null;
   inspectionBase: string | null;
 }
@@ -43,7 +44,7 @@ export default function App() {
     fetchSession()
       .then(setSession)
       .catch(() =>
-        setSession({ user: null, correctionsEnabled: false, adminGridUrl: null, inspectionBase: null }),
+        setSession({ user: null, correctionsEnabled: false, correctionJobs: [], adminGridUrl: null, inspectionBase: null }),
       );
   }, []);
 
@@ -149,7 +150,11 @@ export default function App() {
                 </Notice>
               </div>
             ) : section === "rows" ? (
-              <RowsView correctionsEnabled={session.correctionsEnabled} inspectionBase={session.inspectionBase} />
+              <RowsView
+                correctionsEnabled={session.correctionsEnabled}
+                correctionJobs={session.correctionJobs}
+                inspectionBase={session.inspectionBase}
+              />
             ) : section === "movements" ? (
               <MovementsView />
             ) : section === "history" ? (
