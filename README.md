@@ -7,9 +7,9 @@
 
 | 화면 | 내용 |
 | --- | --- |
-| 검품 내역 | 검품 행 + 발주/검품/불량 수량 + 불량사유 + 사진, 행 상세에서 수량 보정 |
-| 회송 / 교환 | 회송·교환 원본 내역 |
-| 이력 | 검품 앱 이력 아카이브 |
+| 검품 내역 | 검품 행 + 발주/검품/회송/교환 수량 + 불량사유 + 사진, 오늘/전체 작업과 job 선택, 행 상세에서 수량 보정 |
+| 회송 / 교환 | 회송·교환 원본 내역 (최신순) |
+| 이력 | 일별 검품 KPI 요약 (최신순) |
 | 저장 / 복구 상태 | 네이티브 저장 영수증 조회, 복구 요청, 수량 보정 반영 확인 |
 | 기준정보 | 만들지 않았습니다. 검품 앱의 admin grid로 **링크**만 합니다 |
 
@@ -29,8 +29,23 @@ machine과 CAS, 회송/교환 state machine, 네이티브 저장 영수증을 �
 
 ### 사용하는 action
 
-`getInspectionRows` · `getCurrentJob` · `getReturnExchangeRecords` · `getHistoryData` · `getPhotoArchive` ·
-`saveInspectionQtyFastBatch` · `confirmInspectionQty` · `getNativeWriteStatus` · `recoverNativeWrite`
+`getInspectionRows` · `getReturnExchangeRecords` · `getHistoryData` · `saveInspectionQtyFastBatch` ·
+`confirmInspectionQty` · `getNativeWriteStatus` · `recoverNativeWrite`
+
+### 운영 응답에서 확인된 사실 (2026-10-23, 읽기 전용 검증)
+
+소스 코드만 읽고 짠 가정과 실제 응답은 달랐습니다. 아래는 실제 운영 응답으로 확인한 내용입니다.
+
+| 항목 | 실제 |
+| --- | --- |
+| 검품 행 필드 | `센터명`, `불량수량`, `비고`가 **없음**. 불량은 `불량사유` + `회송수량` + `교환수량`, 분류는 `DPT명` |
+| 사진 필드 | `photoFileIds`(배열) / `사진파일ID목록`(줄바꿈 구분). id는 `r2_<uuid>_<hash>` 56자 |
+| 사진 표시 | `{INSPECTION_APP_BASE}/api/photo?id=…&sz=w320` 익명 호출로 JPEG 200 (w320 약 17KB) |
+| 필터 | **`date`, `selectedCenter`는 무시됨.** `filterMode`만 유효: `current`=오늘 job(296행), `all`=보관된 전 job(9개, 1,890행) |
+| 회송/교환 | `records` 키. 구분은 `처리유형`, 수량은 `회송수량`/`교환수량`, 상태는 `effectiveActionStatus`. `current`는 비어 있을 수 있어 기본은 `all` |
+| 이력 | 행 단위 이력이 아니라 **일별 KPI 요약**(195일, 오래된 순). 화면에서 최신순으로 뒤집어 표시 |
+| 영수증 | `operationId`와 `payloadHash`가 **둘 다 필수**. 없으면 `NATIVE_WRITE_INVALID` |
+| `getCurrentJob` | 응답 3.5MB(원가 포함). Vercel 응답 한도(4.5MB)에 근접하고 화면에도 필요 없어 프록시하지 않음 |
 
 ## 안전 보정
 

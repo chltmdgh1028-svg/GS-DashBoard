@@ -16,20 +16,38 @@ import { formatNumber } from "../view-models/format";
 
 const text = (value: unknown) => (value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value));
 
+/** `_dateKey` is the app's sort key, not something to show; the rest are shown as received. */
+const HIDDEN = new Set(["_dateKey"]);
+
+/** Columns that carry a 0..1 ratio on production (검품률, SKU 커버리지). */
+const isRatio = (column: string) => /률|커버리지/.test(column);
+
+function cell(column: string, value: unknown) {
+  if (value == null || value === "") return "";
+  if (typeof value === "number") {
+    if (isRatio(column) && value >= 0 && value <= 1) return `${(value * 100).toFixed(1)}%`;
+    return formatNumber(value);
+  }
+  return text(value);
+}
+
 export function HistoryView() {
   const [query, setQuery] = useState("");
   const { data, error, loading, reload } = useResource(() => fetchHistory(), "history");
 
+  // The archive arrives oldest first (04/08 ... 10/22); an operator wants today on top.
   const rows = useMemo(() => {
     const list = Array.isArray(data?.data) ? (data.data as Record<string, unknown>[]) : [];
-    return list.filter((row) => row && typeof row === "object");
+    return list
+      .filter((row) => row && typeof row === "object")
+      .sort((a, b) => text(b._dateKey ?? b["일자"]).localeCompare(text(a._dateKey ?? a["일자"])));
   }, [data]);
 
   // History columns are whatever the archive carries; infer them in first-seen
   // order so a new field appears without a change here.
   const columns = useMemo(() => {
     const seen: string[] = [];
-    for (const row of rows) for (const key of Object.keys(row)) if (!seen.includes(key)) seen.push(key);
+    for (const row of rows) for (const key of Object.keys(row)) if (!HIDDEN.has(key) && !seen.includes(key)) seen.push(key);
     return seen;
   }, [rows]);
 
@@ -72,7 +90,9 @@ export function HistoryView() {
             <thead>
               <tr>
                 {columns.map((column) => (
-                  <th key={column}>{column}</th>
+                  <th key={column} style={{ textAlign: column === "일자" ? "left" : "right" }}>
+                    {column}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -80,8 +100,13 @@ export function HistoryView() {
               {filtered.slice(0, 500).map((row, index) => (
                 <tr key={index}>
                   {columns.map((column) => (
-                    <td key={column} title={text(row[column])}>
-                      {text(row[column]) || <span className="muted">-</span>}
+                    <td
+                      key={column}
+                      className="num"
+                      title={text(row[column])}
+                      style={{ textAlign: column === "일자" ? "left" : "right" }}
+                    >
+                      {cell(column, row[column]) || <span className="muted">-</span>}
                     </td>
                   ))}
                 </tr>

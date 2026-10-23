@@ -82,11 +82,17 @@ export function logout() {
   return request<{ ok: true }>("/api/logout", { method: "POST" });
 }
 
+/**
+ * The only filters the inspection app actually honours. Verified on
+ * production: `date` and `selectedCenter` change nothing (the same 1,890 rows
+ * come back for any date), so they are not offered. `filterMode` is `current`
+ * (today's job) or `all` (every retained job); a single job is selected from
+ * the rows already received.
+ */
+export type FilterMode = "current" | "all";
+
 export interface RowFilters {
-  jobKey?: string;
-  date?: string;
-  center?: string;
-  filterMode?: string;
+  filterMode: FilterMode;
   [key: string]: string | undefined;
 }
 
@@ -94,12 +100,8 @@ export function fetchRows(filters: RowFilters) {
   return request<InspectionRowsResponse>(`/api/ops/rows${query(filters)}`);
 }
 
-export function fetchCurrentJob() {
-  return request<Record<string, unknown>>("/api/ops/current-job");
-}
-
 export function fetchMovements(filters: RowFilters) {
-  return request<{ ok?: boolean; records?: MovementRecord[]; data?: MovementRecord[] }>(
+  return request<{ ok?: boolean; records?: MovementRecord[] }>(
     `/api/ops/movements${query(filters)}`,
   );
 }
@@ -108,14 +110,15 @@ export function fetchHistory() {
   return request<{ ok?: boolean; data?: unknown[] }>("/api/ops/history");
 }
 
-export function fetchWriteStatus(operationId: string, kind: string, payloadHash?: string) {
+/** The app needs both the operation id and the payload hash to find a receipt. */
+export function fetchWriteStatus(operationId: string, kind: string, payloadHash: string) {
   return request<WriteReceipt>("/api/ops/write-status", {
     method: "POST",
     body: JSON.stringify({ operationId, kind, payloadHash }),
   });
 }
 
-export function recoverWrite(operationId: string, kind: string, payloadHash?: string, reason?: string) {
+export function recoverWrite(operationId: string, kind: string, payloadHash: string, reason?: string) {
   return request<WriteReceipt>("/api/ops/recover-write", {
     method: "POST",
     body: JSON.stringify({ operationId, kind, payloadHash, reason }),

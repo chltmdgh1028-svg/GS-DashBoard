@@ -137,8 +137,6 @@ export function createApp() {
       inspectionApiConfigured: Boolean(inspectionApiConfig()),
       missingInspectionVars: missingInspectionVars(),
       correctionsEnabled: correctionsEnabled(),
-      adminGridUrl: adminGridUrl() ?? null,
-      inspectionBase: inspectionBase() ?? null,
     });
   });
 
@@ -179,9 +177,12 @@ export function createApp() {
   /* ---------------------------------------------------------------- Reads */
 
   /**
-   * Inspection rows: qty, reason and photo references in one payload.
-   * `includePhotos` is passed through so the row detail does not need a
-   * second round trip per row.
+   * Inspection rows: qty, reason and photo ids in one payload.
+   *
+   * Only `filterMode` is passed. Verified on production that `date` and
+   * `selectedCenter` do not change the result (the same 1,890 rows come back
+   * for any date), so forwarding them would only suggest a filter that does
+   * not exist. `current` is today's job, `all` every retained job.
    */
   app.get("/api/ops/rows", requireUser, async (req, res) => {
     try {
@@ -189,24 +190,12 @@ export function createApp() {
         await gas({
           action: "getInspectionRows",
           payload: {
-            jobKey: str(req.query.jobKey),
-            date: str(req.query.date),
-            selectedCenter: str(req.query.center),
-            includeAllCenters: str(req.query.allCenters) || "true",
-            filterMode: str(req.query.filterMode) || "current",
-            includePhotos: str(req.query.includePhotos) || "true",
+            filterMode: str(req.query.filterMode) === "all" ? "all" : "current",
+            includeAllCenters: "true",
+            includePhotos: "true",
           },
         }),
       );
-    } catch (cause) {
-      sendError(res, cause);
-    }
-  });
-
-  /** The job the field app is currently working, used to seed the filters. */
-  app.get("/api/ops/current-job", requireUser, async (_req, res) => {
-    try {
-      res.json(await gas({ action: "getCurrentJob" }));
     } catch (cause) {
       sendError(res, cause);
     }
@@ -218,11 +207,7 @@ export function createApp() {
       res.json(
         await gas({
           action: "getReturnExchangeRecords",
-          payload: {
-            filterMode: str(req.query.filterMode),
-            jobKey: str(req.query.jobKey),
-            date: str(req.query.date),
-          },
+          payload: { filterMode: str(req.query.filterMode) === "current" ? "current" : "all" },
         }),
       );
     } catch (cause) {
@@ -238,14 +223,6 @@ export function createApp() {
     }
   });
 
-  app.get("/api/ops/photos/archive", requireUser, async (req, res) => {
-    try {
-      res.json(await gas({ action: "getPhotoArchive", payload: { date: str(req.query.date) } }));
-    } catch (cause) {
-      sendError(res, cause);
-    }
-  });
-
   /* ------------------------------------------------------ Save / recovery */
 
   /**
@@ -254,14 +231,19 @@ export function createApp() {
    */
   app.post("/api/ops/write-status", requireUser, async (req, res) => {
     const operationId = str(req.body?.operationId);
-    if (!operationId) return res.status(400).json({ error: "operationId가 필요합니다." });
+    const payloadHash = str(req.body?.payloadHash);
+    // The app answers NATIVE_WRITE_INVALID without both, so refuse here with a
+    // message that says what is missing instead of forwarding a doomed call.
+    if (!operationId || !payloadHash) {
+      return res.status(400).json({ error: "operationId와 payloadHash가 모두 필요합니다." });
+    }
     try {
       res.json(
         await gas({
           action: "getNativeWriteStatus",
           kind: str(req.body?.kind) || "action_status",
           operationId,
-          payloadHash: str(req.body?.payloadHash),
+          payloadHash,
         }),
       );
     } catch (cause) {
@@ -272,14 +254,17 @@ export function createApp() {
   /** Ask the app to resolve a write left PENDING or UNKNOWN. */
   app.post("/api/ops/recover-write", requireUser, requireCorrections, async (req, res) => {
     const operationId = str(req.body?.operationId);
-    if (!operationId) return res.status(400).json({ error: "operationId가 필요합니다." });
+    const payloadHash = str(req.body?.payloadHash);
+    if (!operationId || !payloadHash) {
+      return res.status(400).json({ error: "operationId와 payloadHash가 모두 필요합니다." });
+    }
     try {
       res.json(
         await gas({
           action: "recoverNativeWrite",
           kind: str(req.body?.kind) || "action_status",
           operationId,
-          payloadHash: str(req.body?.payloadHash),
+          payloadHash,
           reason: str(req.body?.reason) || "console recovery",
         }),
       );

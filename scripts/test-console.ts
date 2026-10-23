@@ -25,18 +25,40 @@ const received: Received[] = [];
 /** Makes the stub answer the next call with this body instead of the default. */
 let nextResponse: Record<string, unknown> | undefined;
 
+const PHOTO_A = "r2_0f8c2b1a-1111-4222-8333-444455556666_a1b2c3d4e5f60718";
+const PHOTO_B = "r2_9e8d7c6b-aaaa-4bbb-8ccc-ddddeeeeffff_0918273645abcdef";
+
+/** Field names as production returns them: no 센터명, no 불량수량, photos as array + newline string. */
 const ROWS = [
   {
     __rowNumber: 2,
-    작업기준일또는CSV식별값: "JOB-20261022",
-    상품코드: "8800001",
-    상품명: "사과 부사 5kg",
-    협력사명: "가온프레시",
-    센터명: "수도권센터",
-    발주수량: 100,
+    작업기준일또는CSV식별값: "csv_2026-10-22_2c10b50f",
+    상품코드: "2345001658347",
+    상품명: "FCS)조생밀감(950G/팩)",
+    협력사명: "영농조합법인신우유통",
+    "DPT명": "과일",
+    발주수량: 375,
     검품수량: 90,
-    불량수량: 5,
-    불량사유: "외관 불량",
+    회송수량: 2,
+    교환수량: 0,
+    불량사유: "무름",
+    버전: 3,
+    photoFileIds: [PHOTO_A, PHOTO_B],
+    사진파일ID목록: `${PHOTO_A}\n${PHOTO_B}`,
+  },
+];
+
+const MOVEMENTS = [
+  {
+    작성일시: "2026-10-22 20:41:56",
+    작업기준일또는CSV식별값: "csv_2026-10-22_2c10b50f",
+    상품코드: "2345001658347",
+    센터명: "김해일배센터",
+    처리유형: "회송",
+    회송수량: 2,
+    교환수량: 0,
+    불량사유: "무름",
+    effectiveActionStatus: "미처리",
   },
 ];
 
@@ -60,9 +82,14 @@ const stub = http.createServer((req, res) => {
     }
 
     if (body.action === "getInspectionRows") {
-      return send({ ok: true, rows: ROWS, diagnostics: { role: "ADMIN", filterMode: "current" } });
+      return send({
+        ok: true,
+        rows: ROWS,
+        rowIdentityNamespace: "supabase:inspection_records",
+        sourceVersion: { version: "510", lastAction: "saveInspectionQtyFastBatch" },
+      });
     }
-    if (body.action === "getReturnExchangeRecords") return send({ ok: true, records: [] });
+    if (body.action === "getReturnExchangeRecords") return send({ ok: true, records: MOVEMENTS });
     if (body.action === "getHistoryData") return send({ ok: true, data: [] });
     if (body.action === "saveInspectionQtyFastBatch") return send({ ok: true, version: 7 });
     if (body.action === "confirmInspectionQty") return send({ ok: true, matches: true, requestIdMatched: true });
@@ -86,6 +113,22 @@ process.env.SESSION_SECRET = "test-session-secret";
 process.env.CORRECTIONS_ENABLED = "true";
 
 const { createApp } = await import("../server/app.js");
+const { photoIdsOf } = await import("../src/photos.js");
+
+/* --------------------------------------------- photo ids (real field names) */
+
+assert.deepEqual(photoIdsOf({ photoFileIds: [PHOTO_A, PHOTO_B] }), [PHOTO_A, PHOTO_B], "array form");
+assert.deepEqual(
+  photoIdsOf({ photoFileIds: [], 사진파일ID목록: `${PHOTO_A}\n${PHOTO_B}` }),
+  [PHOTO_A, PHOTO_B],
+  "newline-string fallback when the array is empty",
+);
+assert.deepEqual(photoIdsOf({ photoFileIds: [PHOTO_A, PHOTO_A] }), [PHOTO_A], "duplicates collapse");
+assert.deepEqual(photoIdsOf({ photoFileIds: [PHOTO_A, "short", "bad id!", ""] }), [PHOTO_A], "ids /api/photo rejects are dropped");
+assert.deepEqual(photoIdsOf({}), [], "a row with no photo field has no photos");
+assert.deepEqual(photoIdsOf({ photoFileIds: [], 사진파일ID목록: "" }), [], "empty fields have no photos");
+// The names the first version guessed must not be what we rely on.
+assert.deepEqual(photoIdsOf({ photoIds: [PHOTO_A], 사진들: [PHOTO_A] }), [], "guessed field names are not read");
 
 async function start() {
   const app = createApp();
@@ -140,16 +183,30 @@ try {
 
   /* ------------------------------------------------------------- reads */
 
-  const rows = await fetch(`${base}/api/ops/rows?jobKey=JOB-20261022&filterMode=all`, {
-    headers: { cookie },
-  }).then(json);
+  // date / jobKey / center are filters the app ignores (verified on production),
+  // so they must never be forwarded as if they narrowed anything.
+  const rows = await fetch(
+    `${base}/api/ops/rows?filterMode=all&date=2026-01-01&jobKey=JOB-X&center=abc`,
+    { headers: { cookie } },
+  ).then(json);
   assert.equal((rows.rows as unknown[]).length, 1, "rows must pass through unchanged");
+  assert.equal((rows.sourceVersion as { version?: string }).version, "510", "sourceVersion must pass through");
 
   const rowCall = received.findLast((entry) => entry.action === "getInspectionRows");
   const rowPayload = rowCall?.body.payload as Record<string, unknown>;
-  assert.equal(rowPayload.jobKey, "JOB-20261022", "filters must reach the app");
-  assert.equal(rowPayload.filterMode, "all");
+  assert.equal(rowPayload.filterMode, "all", "filterMode must reach the app");
   assert.equal(rowPayload.includePhotos, "true", "photos must be requested with the rows");
+  for (const ignored of ["date", "jobKey", "selectedCenter", "center"]) {
+    assert.ok(!(ignored in rowPayload), `${ignored} is ignored by the app and must not be forwarded`);
+  }
+
+  await fetch(`${base}/api/ops/rows?filterMode=bogus`, { headers: { cookie } }).then(json);
+  const bogus = received.findLast((entry) => entry.action === "getInspectionRows");
+  assert.equal(
+    (bogus?.body.payload as Record<string, unknown>).filterMode,
+    "current",
+    "an unknown filterMode must fall back to current, never reach the app verbatim",
+  );
 
   // Every call must mark itself as a service integration, or the app's
   // minimum-client-version gate answers CLIENT_UPDATE_REQUIRED.
@@ -157,8 +214,19 @@ try {
   assert.equal(rowCall?.body.caller, "inspection-master-console", "calls must declare a caller");
   assert.equal(rowCall?.body.sessionToken, "stub-session-token", "the token must be attached server-side");
 
-  await fetch(`${base}/api/ops/movements`, { headers: { cookie } }).then(json);
+  const movements = await fetch(`${base}/api/ops/movements`, { headers: { cookie } }).then(json);
+  assert.equal((movements.records as unknown[]).length, 1, "movements must come back under `records`");
+  const movementCall = received.findLast((entry) => entry.action === "getReturnExchangeRecords");
+  assert.equal(
+    (movementCall?.body.payload as Record<string, unknown>).filterMode,
+    "all",
+    "movements default to all: current is empty on a quiet day",
+  );
   await fetch(`${base}/api/ops/history`, { headers: { cookie } }).then(json);
+
+  // The 3.5MB current-job proxy was removed; it must stay gone.
+  const gone = await fetch(`${base}/api/ops/current-job`, { headers: { cookie } });
+  assert.equal(gone.status, 404, "the current-job proxy must not exist");
 
   /* -------------------------------------------------- correction guards */
 
@@ -224,11 +292,22 @@ try {
   const receipt = await post("/api/ops/write-status", {
     operationId: "op-1",
     kind: "action_status",
+    payloadHash: "a".repeat(64),
   }).then(json);
   assert.equal((receipt.nativeAck as Record<string, unknown>).state, "COMMITTED");
 
-  const noOperation = await post("/api/ops/write-status", { kind: "action_status" });
-  assert.equal(noOperation.status, 400, "a receipt lookup needs an operationId");
+  for (const [label, body] of [
+    ["no operationId", { kind: "action_status", payloadHash: "a".repeat(64) }],
+    ["no payloadHash", { kind: "action_status", operationId: "op-1" }],
+  ] as const) {
+    const before = received.length;
+    const response = await post("/api/ops/write-status", body);
+    assert.equal(response.status, 400, `a receipt lookup with ${label} must be refused`);
+    assert.equal(received.length, before, `${label} must not reach the app (it answers NATIVE_WRITE_INVALID)`);
+  }
+
+  const recoverNoHash = await post("/api/ops/recover-write", { kind: "action_status", operationId: "op-1" });
+  assert.equal(recoverNoHash.status, 400, "recovery also needs the payloadHash");
 
   main.server.close();
 
@@ -248,7 +327,7 @@ try {
   const blockedRecovery = await fetch(`${readOnly.base}/api/ops/recover-write`, {
     method: "POST",
     headers: { "Content-Type": "application/json", cookie: readOnly.cookie },
-    body: JSON.stringify({ operationId: "op-1", kind: "action_status" }),
+    body: JSON.stringify({ operationId: "op-1", kind: "action_status", payloadHash: "a".repeat(64) }),
   });
   assert.equal(blockedRecovery.status, 403, "recovery must be refused when corrections are not enabled");
   assert.equal(received.length, before, "a blocked write must never reach the inspection app");
@@ -265,6 +344,7 @@ try {
   const health = await fetch(`${unconfigured.base}/api/health`).then(json);
   assert.equal(health.inspectionApiConfigured, false);
   assert.deepEqual(health.missingInspectionVars, ["INSPECTION_APP_BASE"]);
+  assert.ok(!("inspectionBase" in health) && !("adminGridUrl" in health), "health must not expose the inspection origin");
 
   const unconfiguredRead = await fetch(`${unconfigured.base}/api/ops/rows`, {
     headers: { cookie: unconfigured.cookie },

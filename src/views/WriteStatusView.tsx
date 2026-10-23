@@ -47,14 +47,16 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
   const [requestId, setRequestId] = useState("");
   const [qtyResult, setQtyResult] = useState<string>();
 
+  const ready = operationId.trim() !== "" && payloadHash.trim() !== "";
+
   async function run(action: "status" | "recover") {
-    if (!operationId.trim()) return;
+    if (!ready) return;
     setBusy(true);
     try {
       const result =
         action === "status"
-          ? await fetchWriteStatus(operationId.trim(), kind, payloadHash.trim() || undefined)
-          : await recoverWrite(operationId.trim(), kind, payloadHash.trim() || undefined, "console recovery");
+          ? await fetchWriteStatus(operationId.trim(), kind, payloadHash.trim())
+          : await recoverWrite(operationId.trim(), kind, payloadHash.trim(), "console recovery");
       setReceipt(result);
     } catch (cause) {
       setReceipt(undefined);
@@ -103,6 +105,8 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
       <Notice tone="info" icon={<IconInfo size={16} aria-hidden />} title="다시 저장하지 마세요">
         응답이 유실되었거나 PENDING으로 끝난 저장은 이미 반영되었을 수 있습니다. 같은 operationId로 상태를
         조회하고, 필요하면 복구를 요청하세요. 같은 내용을 다시 저장하면 중복이 생길 수 있습니다.
+        영수증은 operationId와 payloadHash를 둘 다 알아야 찾을 수 있습니다. 수량 보정은 이 방식이 아니라 아래
+        "수량 보정 확인"으로 원본 행을 읽어 확인합니다.
       </Notice>
 
       <SectionCard title="네이티브 저장 영수증" subtitle="operationId로 조회">
@@ -119,15 +123,15 @@ export function WriteStatusView({ correctionsEnabled }: { correctionsEnabled: bo
           <Field label="operationId">
             <Input value={operationId} onChange={(event) => setOperationId(event.target.value)} style={{ width: 300 }} />
           </Field>
-          <Field label="payloadHash" hint="선택">
+          <Field label="payloadHash" hint="필수 · 저장 요청 내용의 지문(sha256)">
             <Input value={payloadHash} onChange={(event) => setPayloadHash(event.target.value)} style={{ width: 220 }} />
           </Field>
-          <Button variant="primary" loading={busy} disabled={!operationId.trim()} onClick={() => run("status")}>
+          <Button variant="primary" loading={busy} disabled={!ready} onClick={() => run("status")}>
             상태 조회
           </Button>
           <Button
             variant="danger"
-            disabled={!correctionsEnabled || !operationId.trim() || busy}
+            disabled={!correctionsEnabled || !ready || busy}
             title={correctionsEnabled ? undefined : "CORRECTIONS_ENABLED=true 일 때만 사용할 수 있습니다"}
             onClick={() => run("recover")}
           >
