@@ -1,55 +1,115 @@
-import { useMemo, useState } from "react";
-import type { InspectionRow, QtyConfirmation, WriteReceipt } from "../domain/types";
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
+import type { InspectionRow, QtyConfirmation } from "../domain/types";
 import type { FilterMode } from "../api";
-import { confirmQty, correctQty, fetchRows, newQtyRequestId, photoUrl } from "../api";
+import { confirmQty, correctQty, fetchRows, newQtyRequestId } from "../api";
 import { photoIdsOf } from "../photos";
-import { useResource } from "../useResource";
 import {
-  Badge,
+  activeFilterCount,
+  applyFilters,
+  dptOf,
+  EMPTY_FILTERS,
+  facet,
+  groupBySupplier,
+  hasIssue,
+  initialOf,
+  jobOf,
+  num,
+  rateOf,
+  sortRows,
+  summarize,
+  supplierOf,
+} from "../lib/rowsModel";
+import type { IssueFilter, PhotoFilter, RowFilters, SortKey, SortSpec, StatusFilter, SupplierGroup } from "../lib/rowsModel";
+import { useResource } from "../useResource";
+import { DETAIL_DEFAULT, DETAIL_MAX, DETAIL_MIN, RowDetail } from "./RowDetail";
+import {
   Button,
   ConfirmDialog,
+  DataGrid,
   EmptyState,
   ErrorState,
-  Field,
-  Input,
   LoadingState,
-  MetaItem,
+  MultiSelect,
   Notice,
-  PageHeader,
   SearchInput,
-  SectionCard,
   Segmented,
   Select,
   useToast,
 } from "../ui";
-import { IconError, IconInfo, IconRows, IconWarning } from "../ui/icons";
-import { formatNumber } from "../view-models/format";
+import type { GridColumn } from "../ui";
+import {
+  IconCamera,
+  IconChevronDown,
+  IconChevronRight,
+  IconError,
+  IconFilterReset,
+  IconRows,
+} from "../ui/icons";
+import { formatNumber, formatPercent } from "../view-models/format";
 
-const PAGE_SIZE = 50;
+const text = (value: unknown) => (value == null ? "" : String(value));
 
-const text = (value: unknown) => (value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value));
-const number = (value: unknown) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
+const WIDTH_KEY = "console.detailWidth";
+
+/**
+ * Widths that are not 상품명: 코드 124 + DPT 84 + 발주 72 + 검품 72 + 검품률 112 +
+ * 회송 60 + 교환 60 + 불량사유 144 + 사진 64. The table never gets narrower than
+ * these plus NAME_MIN, so a product name is scrolled to rather than cut off.
+ */
+const FIXED_WIDTH = 792;
+const NAME_MIN = 300;
+
+/** The drawer width an operator last chose. Storage can be unavailable (private window), so it only ever helps. */
+function readDetailWidth() {
+  try {
+    const stored = Number(localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= DETAIL_MIN && stored <= DETAIL_MAX ? stored : DETAIL_DEFAULT;
+  } catch {
+    return DETAIL_DEFAULT;
+  }
+}
 
 const MODE_OPTIONS: { value: FilterMode; label: string }[] = [
   { value: "current", label: "오늘 작업" },
   { value: "all", label: "전체 작업" },
 ];
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "전체" },
+  { value: "done", label: "검품 완료" },
+  { value: "todo", label: "미검품" },
+];
+const ISSUE_OPTIONS: { value: IssueFilter; label: string }[] = [
+  { value: "all", label: "전체" },
+  { value: "any", label: "이슈 있음" },
+  { value: "return", label: "회송" },
+  { value: "exchange", label: "교환" },
+  { value: "reason", label: "불량사유" },
+];
+const PHOTO_OPTIONS: { value: PhotoFilter; label: string }[] = [
+  { value: "all", label: "전체" },
+  { value: "with", label: "있음" },
+  { value: "without", label: "없음" },
+];
+const VIEW_OPTIONS: { value: "group" | "flat"; label: string }[] = [
+  { value: "group", label: "협력사별" },
+  { value: "flat", label: "목록" },
+];
 
-/** jobKeys look like `csv_2026-10-22_2c10b50f`; show the date, which is what an operator recognises. */
+/** jobKeys look like `csv_2026-10-22_2c10b50f`; the date is what an operator recognises. */
 function jobLabel(jobKey: string, count: number) {
   const date = jobKey.match(/(\d{4}-\d{2}-\d{2})/)?.[1];
   return `${date ?? jobKey} · ${formatNumber(count)}행`;
 }
 
-/** A correction in flight, kept so an uncertain outcome can be resolved by reading. */
+const rowKeyOf = (row: InspectionRow) => `${jobOf(row)}|${row.__rowNumber ?? ""}|${text(row.상품코드)}|${supplierOf(row)}`;
+
+/** The 1,000+ row table is only readable if "nothing done yet" recedes. */
+const isTodo = (row: InspectionRow) => num(row.검품수량) === 0;
+
 interface PendingCorrection {
   row: InspectionRow;
   qty: number;
   requestId: string;
-  receipt?: WriteReceipt;
   confirmation?: QtyConfirmation;
 }
 
@@ -61,58 +121,283 @@ export function RowsView({
   inspectionBase: string | null;
 }) {
   const [mode, setMode] = useState<FilterMode>("current");
-  const [jobKey, setJobKey] = useState("");
-  const [query, setQuery] = useState("");
-  const [onlyIssues, setOnlyIssues] = useState(false);
-  const [page, setPage] = useState(0);
+  const [filters, setFilters] = useState<RowFilters>(EMPTY_FILTERS);
+  const [view, setView] = useState<"group" | "flat">("group");
+  const [groupDesc, setGroupDesc] = useState(false);
+  const [sort, setSort] = useState<SortSpec>({ key: "supplier", dir: "asc" });
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [selected, setSelected] = useState<InspectionRow>();
-  const [editQty, setEditQty] = useState("");
   const [pending, setPending] = useState<PendingCorrection>();
   const [busy, setBusy] = useState(false);
+  const [detailWidth, setDetailWidth] = useState(readDetailWidth);
+  const scroller = useRef<HTMLDivElement>(null);
   const pushToast = useToast();
 
   const { data, error, loading, reload } = useResource(() => fetchRows({ filterMode: mode }), `rows:${mode}`);
-
   const rows = useMemo(() => data?.rows ?? [], [data]);
 
-  // A job is chosen from the rows already received: the app ignores `date`, so
-  // there is nothing server-side to narrow by.
+  const grouped = view === "group";
+  const deferredQuery = useDeferredValue(filters.query);
+
   const jobs = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const row of rows) {
-      const key = text(row.작업기준일또는CSV식별값);
-      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort(([a], [b]) => b.localeCompare(a));
+    for (const row of rows) counts.set(jobOf(row), (counts.get(jobOf(row)) ?? 0) + 1);
+    return [...counts.entries()].filter(([key]) => key).sort(([a], [b]) => b.localeCompare(a));
   }, [rows]);
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (jobKey && text(row.작업기준일또는CSV식별값) !== jobKey) return false;
-      if (onlyIssues && !(number(row.회송수량) > 0 || number(row.교환수량) > 0 || text(row.불량사유).trim())) {
-        return false;
-      }
-      if (!needle) return true;
-      return [row.상품코드, row.상품명, row.협력사명, row["DPT명"], row.불량사유]
-        .map(text)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle);
+  const supplierOptions = useMemo(() => facet(rows, supplierOf, "(협력사 미지정)"), [rows]);
+  const dptOptions = useMemo(() => facet(rows, dptOf, "(DPT 없음)"), [rows]);
+
+  const filtered = useMemo(
+    () => applyFilters(rows, { ...filters, query: deferredQuery }),
+    [rows, filters, deferredQuery],
+  );
+
+  // Inside a supplier group every row has the same supplier, so sorting "by
+  // supplier" there means nothing; fall back to the product name.
+  const effectiveSort: SortSpec = useMemo(
+    () => (grouped && sort.key === "supplier" ? { key: "name", dir: "asc" } : sort),
+    [grouped, sort],
+  );
+  const sorted = useMemo(() => sortRows(filtered, effectiveSort), [filtered, effectiveSort]);
+  const groups = useMemo(
+    () => (grouped ? groupBySupplier(sorted, groupDesc ? "desc" : "asc") : undefined),
+    [grouped, sorted, groupDesc],
+  );
+  const summary = useMemo(() => summarize(filtered), [filtered]);
+
+  const filterCount = activeFilterCount(filters);
+  const patch = (change: Partial<RowFilters>) => setFilters((previous) => ({ ...previous, ...change }));
+
+  const onSort = useCallback((key: string) => {
+    setSort((previous) => ({
+      key: key as SortKey,
+      dir: previous.key === key && previous.dir === "asc" ? "desc" : "asc",
+    }));
+  }, []);
+
+  const onSelect = useCallback((row: InspectionRow) => setSelected(row), []);
+
+  const changeDetailWidth = useCallback((width: number) => {
+    setDetailWidth(width);
+    try {
+      localStorage.setItem(WIDTH_KEY, String(width));
+    } catch {
+      /* not persisted; the width still applies for this visit */
+    }
+  }, []);
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
-  }, [rows, jobKey, query, onlyIssues]);
+  }, []);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, pageCount - 1);
-  const pageRows = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  /** Jump index: the first supplier under each 가나다 initial. */
+  const initials = useMemo(() => {
+    const firstGroup = new Map<string, string>();
+    for (const group of groups ?? []) {
+      const initial = initialOf(group.key);
+      if (!firstGroup.has(initial)) firstGroup.set(initial, group.key);
+    }
+    return [...firstGroup.entries()];
+  }, [groups]);
 
-  const inspected = useMemo(() => filtered.filter((row) => number(row.검품수량) > 0).length, [filtered]);
+  function jumpTo(groupKey: string) {
+    setCollapsed((previous) => {
+      if (!previous.has(groupKey)) return previous;
+      const next = new Set(previous);
+      next.delete(groupKey);
+      return next;
+    });
+    // After the expansion has rendered.
+    requestAnimationFrame(() => {
+      const target = scroller.current?.querySelector<HTMLElement>(`tr.group[data-group-key="${CSS.escape(groupKey)}"]`);
+      target?.scrollIntoView({ block: "start" });
+    });
+  }
+
+  const columns = useMemo<GridColumn<InspectionRow>[]>(() => {
+    const list: GridColumn<InspectionRow>[] = [];
+    if (!grouped) {
+      list.push({
+        key: "supplier",
+        header: "협력사",
+        width: 180,
+        sortKey: "supplier",
+        render: (row) => <span title={supplierOf(row)}>{supplierOf(row) || <span className="muted">-</span>}</span>,
+      });
+    }
+    if (mode === "all") {
+      // Across jobs the same product repeats once per job; the date is what tells the copies apart.
+      list.push({
+        key: "job",
+        header: "작업일",
+        title: "작업(job) 기준일",
+        width: 104,
+        sortKey: "job",
+        render: (row) => <span className="mono" title={jobOf(row)}>{jobOf(row).match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? jobOf(row)}</span>,
+      });
+    }
+    list.push(
+      {
+        key: "code",
+        header: "상품코드",
+        width: 124,
+        sortKey: "code",
+        render: (row) => <span className="mono">{text(row.상품코드)}</span>,
+      },
+      {
+        key: "name",
+        header: "상품명",
+        sortKey: "name",
+        render: (row) => (
+          <span className="cell-strong" title={text(row.상품명)}>
+            {text(row.상품명) || <span className="muted">(상품명 없음)</span>}
+          </span>
+        ),
+      },
+      {
+        key: "dpt",
+        header: "DPT",
+        width: 84,
+        sortKey: "dpt",
+        render: (row) => dptOf(row) || <span className="muted">-</span>,
+      },
+      {
+        key: "ordered",
+        header: "발주",
+        width: 72,
+        align: "right",
+        sortKey: "ordered",
+        render: (row) => formatNumber(num(row.발주수량)),
+      },
+      {
+        key: "inspected",
+        header: "검품",
+        width: 72,
+        align: "right",
+        sortKey: "inspected",
+        render: (row) => <span className="cell-strong">{formatNumber(num(row.검품수량))}</span>,
+      },
+      {
+        key: "rate",
+        header: "검품률",
+        title: "검품수량 ÷ 발주수량",
+        width: 112,
+        sortKey: "rate",
+        render: (row) => {
+          const rate = rateOf(row);
+          return (
+            <div className="rate">
+              <div className="bar">
+                <i style={{ width: `${Math.min(100, rate * 100)}%` }} data-tone={rate >= 1 ? "done" : undefined} />
+              </div>
+              <span className="v">{rate > 0 ? formatPercent(rate, 0) : "-"}</span>
+            </div>
+          );
+        },
+      },
+      {
+        key: "returns",
+        header: "회송",
+        width: 60,
+        align: "right",
+        sortKey: "returns",
+        render: (row) =>
+          num(row.회송수량) > 0 ? <span className="tag" data-tone="danger">{formatNumber(num(row.회송수량))}</span> : <span className="muted">-</span>,
+      },
+      {
+        key: "exchanges",
+        header: "교환",
+        width: 60,
+        align: "right",
+        sortKey: "exchanges",
+        render: (row) =>
+          num(row.교환수량) > 0 ? <span className="tag" data-tone="info">{formatNumber(num(row.교환수량))}</span> : <span className="muted">-</span>,
+      },
+      {
+        key: "reason",
+        header: "불량사유",
+        width: 144,
+        sortKey: "reason",
+        render: (row) => {
+          const reasons = text(row.불량사유)
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean);
+          if (!reasons.length) return <span className="muted">-</span>;
+          return (
+            <span className="row" style={{ gap: 4, flexWrap: "nowrap" }} title={reasons.join(", ")}>
+              <span className="tag">{reasons[0]}</span>
+              {reasons.length > 1 && <span className="tag" data-tone="neutral">+{reasons.length - 1}</span>}
+            </span>
+          );
+        },
+      },
+      {
+        key: "photos",
+        header: "사진",
+        width: 64,
+        align: "right",
+        sortKey: "photos",
+        render: (row) => {
+          const count = photoIdsOf(row).length;
+          return (
+            <span className="cell-photo" data-empty={count === 0 || undefined}>
+              <IconCamera size={13} aria-hidden />
+              {count}
+            </span>
+          );
+        },
+      },
+    );
+    return list;
+  }, [grouped, mode]);
+
+  const renderGroup = useCallback(
+    (group: SupplierGroup, isCollapsed: boolean) => {
+      const s = group.summary;
+      const Chevron = isCollapsed ? IconChevronRight : IconChevronDown;
+      return (
+        <div className="group-inner">
+          <Chevron size={16} className="chev" aria-hidden />
+          <span className="gname" title={group.label}>
+            {group.label}
+          </span>
+          <span className="gcount">{formatNumber(s.rows)}개 상품</span>
+          <span className="gstats">
+            <span>
+              발주 <b>{formatNumber(s.ordered)}</b>
+            </span>
+            <span>
+              검품 <b>{formatNumber(s.inspected)}</b> ({formatPercent(s.rate, 0)})
+            </span>
+            {s.returns > 0 && (
+              <span className="warn">
+                회송 <b>{formatNumber(s.returns)}</b>
+              </span>
+            )}
+            {s.exchanges > 0 && (
+              <span>
+                교환 <b>{formatNumber(s.exchanges)}</b>
+              </span>
+            )}
+          </span>
+        </div>
+      );
+    },
+    [],
+  );
 
   async function runCorrection() {
     if (!pending) return;
     setBusy(true);
     const { row, qty, requestId } = pending;
-    const rowJob = text(row.작업기준일또는CSV식별값);
+    const rowJob = jobOf(row);
     const rowCode = text(row.상품코드);
     try {
       const { saved } = await correctQty({
@@ -121,16 +406,16 @@ export function RowsView({
         partnerName: text(row.협력사명),
         productName: text(row.상품명),
         qty,
-        orderQty: number(row.발주수량),
-        baseQty: number(row.검품수량),
+        orderQty: num(row.발주수량),
+        baseQty: num(row.검품수량),
         requestId,
       });
 
-      // A pending receipt is not a failure. Read the canonical row back and
-      // let that decide, rather than retrying the write.
+      // A pending receipt is not a failure. Read the canonical row back and let
+      // that decide, rather than retrying the write.
       if (saved.pendingWrite || saved.ok === false) {
         const confirmation = await confirmQty(rowJob, rowCode, requestId);
-        setPending({ ...pending, receipt: saved, confirmation });
+        setPending({ ...pending, confirmation });
         pushToast({
           tone: confirmation.matches ? "success" : "warning",
           title: confirmation.matches ? "보정이 반영되어 있습니다" : "저장 여부가 확정되지 않았습니다",
@@ -143,11 +428,10 @@ export function RowsView({
       pushToast({
         tone: "success",
         title: "검품수량 보정 완료",
-        description: `${text(row.상품명)} · ${number(row.검품수량)} → ${qty}`,
+        description: `${text(row.상품명)} · ${num(row.검품수량)} → ${qty}`,
       });
       setPending(undefined);
       setSelected(undefined);
-      setEditQty("");
       if (confirmation && confirmation.matches === false) {
         pushToast({ tone: "warning", title: "저장은 되었으나 확인 조회가 일치하지 않습니다", description: "화면을 새로 고쳐 확인하세요." });
       }
@@ -181,236 +465,248 @@ export function RowsView({
     );
   }
 
-  const photos = selected ? photoIdsOf(selected) : [];
+  const updated = data?.sourceVersion?.lastUpdated
+    ? new Date(data.sourceVersion.lastUpdated).toLocaleString("ko-KR", {
+        timeZone: "Asia/Seoul",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    : undefined;
+
+  const resetFilters = () => setFilters(EMPTY_FILTERS);
+  const allCollapsed = groups ? groups.length > 0 && groups.every((group) => collapsed.has(group.key)) : false;
 
   return (
-    <div className="page">
-      <PageHeader
-        icon={<IconRows size={20} aria-hidden />}
-        title="검품 내역"
-        description="검품 앱이 기록한 행을 그대로 조회합니다."
-        meta={
-          <>
-            <MetaItem label="표시">{formatNumber(filtered.length)}행</MetaItem>
-            <MetaItem label="검품 진행">{formatNumber(inspected)}행</MetaItem>
-            {data?.sourceVersion?.version ? <MetaItem label="원본 버전">{data.sourceVersion.version}</MetaItem> : null}
-            {data?.sourceVersion?.lastUpdated ? (
-              <MetaItem label="원본 갱신">{data.sourceVersion.lastUpdated.slice(0, 16).replace("T", " ")} UTC</MetaItem>
-            ) : null}
-          </>
-        }
-        actions={
+    <div className="fill-page">
+      <header className="console-head">
+        <h1>
+          <IconRows size={20} aria-hidden />
+          검품 내역
+          <span className="sub">
+            {updated ? `원본 갱신 ${updated}` : ""}
+            {data?.sourceVersion?.version ? ` · v${data.sourceVersion.version}` : ""}
+          </span>
+        </h1>
+
+        <div className="row" style={{ gap: 12 }}>
+          <div className="stat-strip" aria-label="표시 중인 행 요약">
+            <div className="stat">
+              <span>표시</span>
+              <b>
+                {formatNumber(summary.rows)}
+                <small>행</small>
+              </b>
+            </div>
+            <div className="stat">
+              <span>검품 진행</span>
+              <b>
+                {formatNumber(summary.inspectedRows)}
+                <small>{summary.rows ? formatPercent(summary.inspectedRows / summary.rows, 0) : "-"}</small>
+              </b>
+            </div>
+            <div className="stat">
+              <span>발주</span>
+              <b>{formatNumber(summary.ordered)}</b>
+            </div>
+            <div className="stat">
+              <span>검품</span>
+              <b>
+                {formatNumber(summary.inspected)}
+                <small>{formatPercent(summary.rate, 1)}</small>
+              </b>
+            </div>
+            <div className="stat" data-tone={summary.returns ? "danger" : undefined}>
+              <span>회송</span>
+              <b>{formatNumber(summary.returns)}</b>
+            </div>
+            <div className="stat" data-tone={summary.exchanges ? "info" : undefined}>
+              <span>교환</span>
+              <b>{formatNumber(summary.exchanges)}</b>
+            </div>
+            <div className="stat">
+              <span>사진</span>
+              <b>{formatNumber(summary.photos)}</b>
+            </div>
+          </div>
           <Button onClick={reload} loading={loading}>
             새로 고침
           </Button>
-        }
-      />
-
-      {!correctionsEnabled && (
-        <Notice tone="info" icon={<IconInfo size={16} aria-hidden />} title="조회 전용 배포">
-          수량 보정은 꺼져 있습니다. 허용하려면 서버에 <code>CORRECTIONS_ENABLED=true</code>를 설정하세요.
-        </Notice>
-      )}
-
-      <SectionCard flush>
-        <div className="table-toolbar">
-          <div className="table-toolbar-group">
-            <Segmented
-              label="작업 범위"
-              value={mode}
-              options={MODE_OPTIONS}
-              onChange={(value) => {
-                setMode(value);
-                setJobKey("");
-                setPage(0);
-                setSelected(undefined);
-              }}
-            />
-            {mode === "all" && (
-              <Select
-                aria-label="작업(job)"
-                value={jobKey}
-                onChange={(event) => {
-                  setJobKey(event.target.value);
-                  setPage(0);
-                }}
-              >
-                <option value="">모든 작업 ({formatNumber(rows.length)}행)</option>
-                {jobs.map(([key, count]) => (
-                  <option key={key} value={key}>
-                    {jobLabel(key, count)}
-                  </option>
-                ))}
-              </Select>
-            )}
-            <SearchInput
-              label="행 검색"
-              value={query}
-              onChange={(value) => {
-                setQuery(value);
-                setPage(0);
-              }}
-              placeholder="상품, 코드, 협력사, DPT, 사유"
-              width={260}
-            />
-            <Button
-              size="sm"
-              variant={onlyIssues ? "primary" : "secondary"}
-              onClick={() => {
-                setOnlyIssues(!onlyIssues);
-                setPage(0);
-              }}
-            >
-              회송·교환·불량만
-            </Button>
-          </div>
-          <div className="spacer" />
-          <div className="table-toolbar-group">
-            <Button size="sm" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
-              이전
-            </Button>
-            <span className="muted num">
-              {safePage + 1} / {pageCount}
-            </span>
-            <Button size="sm" disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)}>
-              다음
-            </Button>
-          </div>
         </div>
+      </header>
 
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>DPT</th>
-                <th>상품코드</th>
-                <th>상품명</th>
-                <th>협력사</th>
-                <th style={{ textAlign: "right" }}>발주</th>
-                <th style={{ textAlign: "right" }}>검품</th>
-                <th style={{ textAlign: "right" }}>회송</th>
-                <th style={{ textAlign: "right" }}>교환</th>
-                <th>불량사유</th>
-                <th style={{ textAlign: "right" }}>사진</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.map((row, index) => {
-                const count = photoIdsOf(row).length;
-                const key = `${text(row.작업기준일또는CSV식별값)}-${text(row.상품코드)}-${text(row.협력사명)}-${index}`;
-                return (
-                  <tr
-                    key={key}
-                    onClick={() => {
-                      setSelected(row);
-                      setEditQty(String(number(row.검품수량)));
-                      setPending(undefined);
-                    }}
-                    aria-selected={selected === row}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <td>{text(row["DPT명"]) || <span className="muted">-</span>}</td>
-                    <td className="mono">{text(row.상품코드)}</td>
-                    <td title={text(row.상품명)}>{text(row.상품명)}</td>
-                    <td title={text(row.협력사명)}>{text(row.협력사명)}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{formatNumber(number(row.발주수량))}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{formatNumber(number(row.검품수량))}</td>
-                    <td className="num" style={{ textAlign: "right" }}>
-                      {number(row.회송수량) > 0 ? formatNumber(number(row.회송수량)) : <span className="muted">0</span>}
-                    </td>
-                    <td className="num" style={{ textAlign: "right" }}>
-                      {number(row.교환수량) > 0 ? formatNumber(number(row.교환수량)) : <span className="muted">0</span>}
-                    </td>
-                    <td title={text(row.불량사유)}>{text(row.불량사유) || <span className="muted">-</span>}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{count || <span className="muted">0</span>}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {!pageRows.length && <EmptyState title="조건에 맞는 검품 행이 없습니다" inline />}
-        </div>
-      </SectionCard>
-
-      {selected && (
-        <SectionCard
-          title={`${text(selected.상품명) || text(selected.상품코드)} 상세`}
-          subtitle={`${text(selected["DPT명"])} · ${text(selected.협력사명)}`}
+      {pending?.confirmation && (
+        <Notice
+          tone={pending.confirmation.matches ? "success" : "warning"}
+          icon={<IconError size={16} aria-hidden />}
+          title={pending.confirmation.matches ? "원본 행에 반영 확인됨" : "원본 행에서 확인되지 않음 — 다시 저장하지 마세요"}
           actions={
-            <Button variant="ghost" size="sm" onClick={() => setSelected(undefined)}>
+            <Button size="sm" onClick={() => setPending(undefined)}>
               닫기
             </Button>
           }
         >
-          <div className="stack" data-gap="sm">
-            <div className="row">
-              <Badge size="sm">발주 {formatNumber(number(selected.발주수량))}</Badge>
-              <Badge tone="accent" size="sm">검품 {formatNumber(number(selected.검품수량))}</Badge>
-              {number(selected.회송수량) > 0 && <Badge tone="danger" size="sm">회송 {formatNumber(number(selected.회송수량))}</Badge>}
-              {number(selected.교환수량) > 0 && <Badge tone="info" size="sm">교환 {formatNumber(number(selected.교환수량))}</Badge>}
-              {text(selected.불량사유) && <Badge tone="warning" size="sm">{text(selected.불량사유)}</Badge>}
+          <span className="mono">requestId {pending.requestId}</span>
+        </Notice>
+      )}
+
+      <div className="console-body">
+        <div className="console-main">
+          <div className="filter-bar">
+            <div className="filter-row">
+              <span className="filter-label">범위</span>
+              <Segmented
+                label="작업 범위"
+                value={mode}
+                options={MODE_OPTIONS}
+                onChange={(value) => {
+                  setMode(value);
+                  setSelected(undefined);
+                  patch({ job: "" });
+                }}
+              />
+              {mode === "all" && (
+                <Select
+                  aria-label="작업(job)"
+                  value={filters.job}
+                  onChange={(event) => patch({ job: event.target.value })}
+                  style={{ width: 170 }}
+                >
+                  <option value="">모든 작업</option>
+                  {jobs.map(([key, count]) => (
+                    <option key={key} value={key}>
+                      {jobLabel(key, count)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <div className="grow" style={{ minWidth: 220 }}>
+                <SearchInput
+                  label="검색"
+                  value={filters.query}
+                  onChange={(value) => patch({ query: value })}
+                  placeholder="상품명, 상품코드, 협력사, 사유 검색"
+                />
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={filterCount === 0}
+                icon={<IconFilterReset size={14} aria-hidden />}
+                onClick={resetFilters}
+              >
+                필터 초기화{filterCount ? ` (${filterCount})` : ""}
+              </Button>
             </div>
 
-            <p className="muted mono">
-              {text(selected.작업기준일또는CSV식별값)} · {text(selected.상품코드)}
-              {selected.수정일시 ? ` · 수정 ${text(selected.수정일시)}` : ""}
-            </p>
+            <div className="filter-row">
+              <MultiSelect
+                label="협력사"
+                options={supplierOptions}
+                selected={filters.suppliers}
+                onChange={(suppliers) => patch({ suppliers })}
+              />
+              <MultiSelect label="DPT" options={dptOptions} selected={filters.dpts} onChange={(dpts) => patch({ dpts })} width={240} />
+              <span className="filter-divider" />
+              <span className="fgroup">
+                <span className="filter-label">검품</span>
+                <Segmented label="검품 상태" value={filters.status} options={STATUS_OPTIONS} onChange={(status) => patch({ status })} />
+              </span>
+              <span className="fgroup">
+                <span className="filter-label">이슈</span>
+                <Segmented label="이슈" value={filters.issue} options={ISSUE_OPTIONS} onChange={(issue) => patch({ issue })} />
+              </span>
+              <span className="fgroup">
+                <span className="filter-label">사진</span>
+                <Segmented label="사진" value={filters.photo} options={PHOTO_OPTIONS} onChange={(photo) => patch({ photo })} />
+              </span>
+            </div>
+          </div>
 
-            {/* Photos load straight from the inspection app: the id is a signed
-                capability, so an <img> needs no header from us. */}
-            {photos.length > 0 && inspectionBase && (
-              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                {photos.map((id) => (
-                  <a key={id} href={photoUrl(inspectionBase, id, "w1200")} target="_blank" rel="noreferrer noopener" title="원본 크기로 열기">
-                    <img
-                      src={photoUrl(inspectionBase, id, "w320")}
-                      alt={`${text(selected.상품명)} 검품 사진`}
-                      loading="lazy"
-                      style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }}
-                    />
-                  </a>
-                ))}
-              </div>
-            )}
-            {photos.length > 0 && !inspectionBase && (
-              <p className="muted">사진 {photos.length}장 (검품 앱 주소를 알 수 없어 표시할 수 없습니다)</p>
-            )}
-            {photos.length === 0 && <p className="muted">등록된 사진이 없습니다.</p>}
+          <div className="grid-card">
+            <div className="grid-meta">
+              <Segmented label="보기" value={view} options={VIEW_OPTIONS} onChange={setView} />
+              {grouped && groups && (
+                <>
+                  <span>
+                    <b>{formatNumber(groups.length)}</b>개 협력사
+                  </span>
+                  <span className="jump" aria-label="가나다 바로가기">
+                    {initials.map(([initial, groupKey]) => (
+                      <button key={initial} type="button" onClick={() => jumpTo(groupKey)} title={`${initial}으로 시작하는 협력사로 이동`}>
+                        {initial}
+                      </button>
+                    ))}
+                  </span>
+                </>
+              )}
+              <span className="spacer" />
+              {grouped && (
+                <>
+                  <Button size="sm" variant="ghost" onClick={() => setGroupDesc(!groupDesc)} title="협력사 정렬 방향">
+                    {groupDesc ? "ㅎ → ㄱ" : "ㄱ → ㅎ"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setCollapsed(allCollapsed ? new Set() : new Set((groups ?? []).map((group) => group.key)))}
+                  >
+                    {allCollapsed ? "모두 펼치기" : "모두 접기"}
+                  </Button>
+                </>
+              )}
+            </div>
 
-            {correctionsEnabled && (
-              <div className="row" style={{ alignItems: "flex-end", gap: 12 }}>
-                <Field label="검품수량 보정" hint={`현재 ${formatNumber(number(selected.검품수량))}`}>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={editQty}
-                    onChange={(event) => setEditQty(event.target.value)}
-                    style={{ width: 140 }}
-                  />
-                </Field>
-                <Button
-                  variant="danger"
-                  disabled={editQty === "" || Number(editQty) === number(selected.검품수량) || Number(editQty) < 0}
-                  onClick={() => setPending({ row: selected, qty: Number(editQty), requestId: newQtyRequestId() })}
-                >
-                  보정
-                </Button>
-              </div>
-            )}
-
-            {pending?.confirmation && (
-              <Notice
-                tone={pending.confirmation.matches ? "success" : "warning"}
-                icon={<IconWarning size={16} aria-hidden />}
-                title={pending.confirmation.matches ? "원본 행에 반영 확인됨" : "원본 행에서 확인되지 않음"}
-              >
-                <span className="mono">requestId {pending.requestId}</span>
-              </Notice>
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon={<IconFilterReset size={20} aria-hidden />}
+                title="조건에 맞는 검품 행이 없습니다"
+                description={filterCount ? "필터를 줄이거나 초기화해 보세요." : "이 범위에는 검품 행이 없습니다."}
+                actions={
+                  filterCount ? (
+                    <Button variant="primary" onClick={resetFilters}>
+                      필터 초기화
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <DataGrid<InspectionRow, SupplierGroup>
+                columns={columns}
+                rows={sorted}
+                groups={groups}
+                rowKey={rowKeyOf}
+                selectedKey={selected ? rowKeyOf(selected) : undefined}
+                onSelect={onSelect}
+                sort={effectiveSort}
+                onSort={onSort}
+                collapsed={collapsed}
+                onToggleGroup={toggleGroup}
+                renderGroup={renderGroup}
+                rowTone={(row) => (hasIssue(row) ? "attention" : undefined)}
+                rowDim={isTodo}
+                minWidth={NAME_MIN + FIXED_WIDTH + (grouped ? 0 : 180) + (mode === "all" ? 104 : 0)}
+                scrollerRef={scroller}
+              />
             )}
           </div>
-        </SectionCard>
-      )}
+        </div>
+
+        {selected && (
+          <RowDetail
+            key={rowKeyOf(selected)}
+            row={selected}
+            inspectionBase={inspectionBase}
+            correctionsEnabled={correctionsEnabled}
+            width={detailWidth}
+            onWidthChange={changeDetailWidth}
+            onClose={() => setSelected(undefined)}
+            onCorrect={(qty) => setPending({ row: selected, qty, requestId: newQtyRequestId() })}
+          />
+        )}
+      </div>
 
       <ConfirmDialog
         open={Boolean(pending) && !pending?.confirmation}
@@ -425,13 +721,13 @@ export function RowsView({
         {pending && (
           <div className="stack" data-gap="sm">
             <Notice tone="danger" icon={<IconError size={16} aria-hidden />}>
-              검품 앱의 원본 행이 바뀝니다. 화면에 보인 수량({formatNumber(number(pending.row.검품수량))})이 그대로일
-              때만 저장되고, 그 사이 누가 고쳤다면 거부됩니다.
+              검품 앱의 원본 행이 바뀝니다. 화면에 보인 수량({formatNumber(num(pending.row.검품수량))})이 그대로일 때만
+              저장되고, 그 사이 누가 고쳤다면 거부됩니다.
             </Notice>
             <p>
               <b>{text(pending.row.상품명)}</b> · {text(pending.row.상품코드)}
               <br />
-              {formatNumber(number(pending.row.검품수량))} → <b>{formatNumber(pending.qty)}</b>
+              {formatNumber(num(pending.row.검품수량))} → <b>{formatNumber(pending.qty)}</b>
             </p>
             <span className="muted mono">requestId {pending.requestId}</span>
           </div>

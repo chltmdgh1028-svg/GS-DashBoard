@@ -20,6 +20,17 @@ export {
   Info as IconInfo,
   CircleCheck as IconOk,
 
+  /* Grid / filters */
+  ChevronDown as IconChevronDown,
+  ChevronRight as IconChevronRight,
+  ChevronsUpDown as IconSortable,
+  ArrowUp as IconArrowUp,
+  ArrowDown as IconArrowDown,
+  ListFilter as IconFilter,
+  FilterX as IconFilterReset,
+  Camera as IconCamera,
+  Check as IconCheck,
+
   /* Controls */
   Search as IconSearch,
   X as IconClose,

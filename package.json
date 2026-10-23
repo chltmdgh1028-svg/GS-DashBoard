@@ -9,7 +9,7 @@
     "start": "npm run build && tsx server.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "tsx scripts/test-console.ts",
+    "test": "tsx scripts/test-model.ts && tsx scripts/test-console.ts",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,0 +1,840 @@
+/* =========================================================================
+   Console layer: full-height data screens.
+
+   The grid screens own the viewport the way the app shell does: the title,
+   the filter bar and the table header stay put and only the rows scroll. That
+   is what keeps a header visible 1,900 rows down. Everything is token-driven.
+   ========================================================================= */
+
+/* ------------------------------ Page frame ------------------------------ */
+.fill-page {
+  height: 100%;
+  /* On a very short window the table must not shrink to nothing: below this the
+     content column scrolls instead (the shell's own scroller takes over). */
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.console-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: var(--s-3);
+}
+
+.console-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+/* ------------------------------- Title row ------------------------------- */
+.console-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+
+.console-head h1 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.console-head h1 svg {
+  color: var(--accent);
+}
+
+.console-head .sub {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
+.stat-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.stat {
+  display: grid;
+  gap: 1px;
+  padding: 6px var(--s-4);
+  border-left: 1px solid var(--border);
+  min-width: 64px;
+}
+
+.stat:first-child {
+  border-left: 0;
+}
+
+.stat span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.stat b {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.stat small {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  margin-left: 3px;
+}
+
+.stat[data-tone="danger"] b {
+  color: var(--neg);
+}
+
+.stat[data-tone="info"] b {
+  color: var(--c-info-600);
+}
+
+/* ------------------------------- Filter bar ------------------------------ */
+.filter-bar {
+  position: relative;
+  z-index: 20; /* above the sticky table header so a popover is never clipped under it */
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs);
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.filter-row .grow {
+  flex: 1 1 0;
+}
+
+.filter-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  margin-right: -2px;
+}
+
+/* A label and its control wrap together, never apart. */
+.fgroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  white-space: nowrap;
+}
+
+.filter-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 2px var(--s-1);
+}
+
+/* Dropdown trigger used by the multi-selects */
+.fbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 var(--s-2) 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.fbtn:hover {
+  border-color: var(--c-neutral-400);
+  background: var(--bg-surface-alt);
+}
+
+.fbtn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.fbtn[data-active="true"] {
+  border-color: var(--border-accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.fbtn .count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.fbtn svg {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.fwrap {
+  position: relative;
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 300px;
+  max-width: 80vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-lg);
+  z-index: 40;
+  overflow: hidden;
+}
+
+.popover-search {
+  padding: var(--s-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.popover-list {
+  max-height: 288px;
+  overflow: auto;
+  padding: var(--s-1);
+  overscroll-behavior: contain;
+}
+
+.popover-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 6px var(--s-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-base);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.popover-item:hover,
+.popover-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.popover-item .box {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--c-neutral-400);
+  border-radius: var(--r-xs);
+  color: transparent;
+}
+
+.popover-item[aria-selected="true"] .box {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+}
+
+.popover-item .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popover-item .n {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.popover-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--s-2);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--bg-surface-alt);
+}
+
+.popover-empty {
+  padding: var(--s-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* ------------------------------- Grid card ------------------------------- */
+.grid-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs);
+  overflow: hidden;
+}
+
+.grid-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 6px var(--s-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface-alt);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.grid-meta .spacer {
+  flex: 1 1 auto;
+}
+
+.jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.jump button {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.jump button:hover {
+  background: var(--accent-soft);
+}
+
+.jump button:disabled {
+  color: var(--c-neutral-300);
+  cursor: default;
+  background: transparent;
+}
+
+.grid-scroll {
+  --thead-h: 34px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* Built on table.data (borders, sorter buttons, hover); this only fixes the
+   geometry the sticky rows depend on. */
+table.data.grid {
+  table-layout: fixed;
+  min-width: var(--grid-min-w, 1100px);
+}
+
+table.data.grid thead th {
+  height: var(--thead-h);
+  padding-top: 0;
+  padding-bottom: 0;
+  z-index: 6;
+  border-bottom: 1px solid var(--border-strong);
+  box-shadow: 0 1px 0 var(--border-strong);
+}
+
+table.data.grid td {
+  height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.data.grid td.wrap {
+  white-space: normal;
+}
+
+table.data.grid tbody tr[data-tone="attention"] td:first-child {
+  box-shadow: inset 3px 0 0 var(--c-warning-600);
+}
+
+/* table.data paints its selection bar on every cell, which reads as vertical
+   rules between columns. Only the first cell carries the bar here. */
+table.data.grid tbody tr[data-selected="true"] td {
+  box-shadow: none;
+  background: var(--bg-selected);
+}
+
+table.data.grid tbody tr[data-selected="true"] td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+table.data.grid tbody tr[data-dim="true"] td {
+  color: var(--text-muted);
+}
+
+table.data.grid td .mono,
+table.data.grid td.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* Supplier group header: sticks just under the column header while its rows scroll. */
+table.data.grid tr.group td {
+  position: sticky;
+  top: var(--thead-h);
+  z-index: 4;
+  height: 38px;
+  padding: 0 var(--s-3);
+  background: var(--c-primary-50);
+  border-bottom: 1px solid var(--border-accent);
+  border-top: 1px solid var(--border-accent);
+  cursor: pointer;
+  scroll-margin-top: var(--thead-h);
+  user-select: none;
+}
+
+table.data.grid tr.group:hover td {
+  background: var(--c-primary-100);
+}
+
+.group-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.group-inner .chev {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.group-inner .gname {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+  color: var(--c-primary-800);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-inner .gcount {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--c-primary-700);
+}
+
+.group-inner .gstats {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-inner .gstats b {
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.group-inner .gstats .warn {
+  color: var(--c-danger-700);
+}
+
+/* ----------------------------- Cell components ---------------------------- */
+.rate {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.rate .bar {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--c-neutral-100);
+  overflow: hidden;
+}
+
+.rate .bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--c-primary-500);
+}
+
+.rate .bar i[data-tone="done"] {
+  background: var(--c-success-600);
+}
+
+.rate .v {
+  flex: 0 0 38px;
+  text-align: right;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--r-sm);
+  background: var(--c-warning-50);
+  border: 1px solid var(--c-warning-200);
+  color: var(--c-warning-700);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tag[data-tone="danger"] {
+  background: var(--c-danger-50);
+  border-color: var(--c-danger-200);
+  color: var(--c-danger-700);
+}
+
+.tag[data-tone="info"] {
+  background: var(--c-info-50);
+  border-color: var(--c-info-200);
+  color: var(--c-info-600);
+}
+
+.tag[data-tone="neutral"] {
+  background: var(--bg-subtle);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.cell-photo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.cell-photo[data-empty="true"] {
+  color: var(--c-neutral-300);
+}
+
+/* ----------------------------- Detail drawer ------------------------------ */
+.detail {
+  position: relative;
+  flex: 0 0 var(--detail-w, 340px);
+  width: var(--detail-w, 340px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+}
+
+/* Drag the left edge to trade table width against detail width. */
+.detail-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.detail-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+
+.detail-resizer:hover::after,
+.detail-resizer:focus-visible::after,
+.detail-resizer[data-dragging="true"]::after {
+  background: var(--accent);
+}
+
+.detail-resizer:focus-visible {
+  outline: none;
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface-alt);
+}
+
+.detail-head .t {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-head h2 {
+  margin: 0 0 2px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.detail-head p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s-4);
+  display: grid;
+  align-content: start;
+  gap: var(--s-4);
+}
+
+.detail-section h3 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.qty-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.qty {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.qty span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.qty b {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.qty[data-tone="accent"] {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+}
+
+.qty[data-tone="accent"] b {
+  color: var(--accent);
+}
+
+.qty[data-tone="danger"] b {
+  color: var(--neg);
+}
+
+.qty[data-tone="info"] b {
+  color: var(--c-info-600);
+}
+
+.qty[data-zero="true"] b {
+  color: var(--c-neutral-300);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 6px var(--s-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.kv dt {
+  color: var(--text-muted);
+}
+
+.kv dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.kv dd.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.photo-main {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  background: var(--c-neutral-100);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.photo-main a {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  cursor: zoom-in;
+}
+
+.photo-main img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.photo-strip {
+  display: flex;
+  gap: 6px;
+  margin-top: var(--s-2);
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.photo-strip button {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: var(--r-md);
+  background: var(--c-neutral-100);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.photo-strip button[aria-current="true"] {
+  border-color: var(--accent);
+}
+
+.photo-strip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-count {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--s-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* Below this width the drawer would squeeze the table; float it instead. */
+@media (max-width: 1320px) {
+  .detail {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    border-radius: 0;
+    border-width: 0 0 0 1px;
+    box-shadow: var(--sh-lg);
+  }
+}

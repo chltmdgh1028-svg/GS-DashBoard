@@ -1,6 +1,7 @@
 @import "pretendard/dist/web/variable/pretendardvariable.css";
 @import "./ui/tokens.css";
 @import "./ui/ui.css";
+@import "./ui/console.css";
 
 *,
 *::before,
