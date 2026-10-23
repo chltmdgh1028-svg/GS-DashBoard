@@ -74,6 +74,17 @@ machine과 CAS, 회송/교환 state machine, 네이티브 저장 영수증을 �
 확인합니다 — 행 확인(`confirmInspectionQty`) 또는 영수증 조회(`getNativeWriteStatus`). 그래도 불확실하면
 `recoverNativeWrite`로 검품 앱에 확정을 요청합니다.
 
+### 운영 검증 기록 (2026-10-23)
+
+지난 job(`csv_2026-10-15`)의 실제 행 1건으로 보정을 검증하고 원복했습니다. 결과 요약:
+정상 보정 6→5, CAS 충돌(오래된 baseQty / 어긋난 baseRevision)은 덮어쓰지 않고 거부, 0 보정, 응답 유실(클라이언트가
+요청 직후 끊음)에서도 원본 행 재조회로 반영 확인, 동일 requestId 재전송은 `idempotent_replay`. 기록은 DB의
+`history_events`에 남지만 `/api/gas`에는 이를 읽는 action이 없습니다.
+
+**주의: 앱은 CAS 충돌도 `ok: true`로 답합니다.** 결과는 `data.inspectionItemResults[].status`로만 판단합니다.
+**닫힘 확인에는 실제 쓰기 본문을 보내지 마세요.** 배포 전환 중 이전 배포가 요청을 받을 수 있습니다. 빈 본문(`{}`)은
+열려 있어도 400, 닫혀 있으면 403이라 쓰기 없이 확인할 수 있습니다.
+
 ## 환경 변수
 
 | 변수 | 필수 | 설명 |
@@ -83,6 +94,7 @@ machine과 CAS, 회송/교환 state machine, 네이티브 저장 영수증을 �
 | `INSPECTION_APP_BASE` | 예 | 검품 앱 origin. 예: `https://inspection-app-main.vercel.app` |
 | `INSPECTION_SESSION_TOKEN` | 예 | 검품 앱이 발급한 세션 토큰. 권한은 검품 앱이 이 토큰으로 판단 |
 | `CORRECTIONS_ENABLED` | 아니오 | `true`일 때만 수량 보정·복구 요청 가능. 기본은 조회 전용 |
+| `CORRECTIONS_JOB_ALLOWLIST` | 아니오 | 보정을 허용할 job(쉼표 구분). 비우면 제한 없음. 켜기 전 검증 때는 한 job만 넣어 범위를 좁힌다 |
 | `ADMIN_ID` | 아니오 | 기본 `admin` |
 | `INSPECTION_TIMEOUT_MS` | 아니오 | 기본 30000 |
 
