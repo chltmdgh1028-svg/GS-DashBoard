@@ -126,7 +126,7 @@ export function MovementsView() {
                 <th>협력사</th>
                 <th style={{ textAlign: "right" }}>수량</th>
                 <th>불량사유</th>
-                <th>처리상태</th>
+                <th title="개선요청 / 경고조치 / 주의조치 (처리 완료 여부가 아니라 조치 등급)">조치</th>
                 <th style={{ textAlign: "right" }}>사진</th>
                 <th>수정자</th>
                 <th>작성일시</th>
