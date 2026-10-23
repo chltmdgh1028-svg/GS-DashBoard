@@ -329,11 +329,11 @@ function Verification({ verification, expected }: { verification: QtyVerificatio
         <>
           <dt>앱 확인</dt>
           <dd>
-            {verification.confirm.error
-              ? "응답 없음(참고용)"
-              : verification.confirm.matches
-                ? `일치${verification.confirm.requestIdMatched ? " · 요청 ID 일치" : ""}`
-                : "불일치"}
+            {/* On production confirmInspectionQty answers matches:false even for a row that matches, so a "no" from it
+                means "no verdict", not "different". Only a positive answer is shown as evidence. */}
+            {verification.confirm.matches
+              ? `일치${verification.confirm.requestIdMatched ? " · 요청 ID 일치" : ""}`
+              : "판정 없음 (참고용 · 위의 원본 행 값이 기준)"}
           </dd>
         </>
       ) : null}
